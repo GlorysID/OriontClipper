@@ -1,0 +1,15 @@
+[Unit]
+Description=ContentClipper Hook Studio visual editor
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/contentclipper
+EnvironmentFile=-/home/ubuntu/contentclipper/.env
+ExecStart=/home/ubuntu/contentclipper/.venv/bin/python /home/ubuntu/contentclipper/tools/hook_template_editor.py --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

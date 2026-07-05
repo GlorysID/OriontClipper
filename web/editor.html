@@ -1,0 +1,1433 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Template Editor — MensuraAIClip</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0a;
+  --surface: #111111;
+  --surface2: #181818;
+  --surface3: #1f1f1f;
+  --border: #222222;
+  --border-light: #2a2a2a;
+  --text: #e8e4df;
+  --text2: #7a7672;
+  --text3: #555250;
+  --accent: #c45a2c;
+  --accent-hover: #d96a3a;
+  --accent-glow: rgba(196, 90, 44, .15);
+  --radius-sm: 4px;
+  --radius: 8px;
+  --font: 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'DM Mono', monospace;
+  --ease: cubic-bezier(.16,1,.3,1);
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+html, body { height: 100%; overflow: hidden; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  touch-action: none;
+}
+
+/* ── Grain overlay ── */
+
+body::before {
+  content: ''; position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.03'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 9999;
+}
+
+/* ── Layout ── */
+
+.app {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+  position: relative;
+}
+
+.left-panel {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  min-width: 0;
+  background: radial-gradient(ellipse at 50% 40%, #14100e 0%, #0a0a0a 100%);
+}
+
+.right-panel {
+  width: 360px;
+  min-width: 360px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  overflow-y: scroll;
+}
+.right-panel::-webkit-scrollbar { width: 6px; }
+.right-panel::-webkit-scrollbar-track { background: var(--surface2); }
+.right-panel::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+/* ── Phone frame ── */
+
+.phone-frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.phone-frame canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.phone-notch {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 90px;
+  height: 18px;
+  background: #000;
+  border-radius: 0 0 12px 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.phone-notch::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%; background: #1a1a1a;
+}
+.phone-notch::after {
+  content: ''; width: 22px; height: 4px; border-radius: 2px; background: #1a1a1a;
+}
+
+.preview-label {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 7px;
+  font-weight: 500;
+  color: rgba(255,255,255,.25);
+  letter-spacing: .5px;
+  z-index: 2;
+}
+
+/* ── Section Tabs ── */
+
+.section-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.section-tab {
+  flex: 1;
+  padding: 10px 4px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text3);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all .2s var(--ease);
+  user-select: none;
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  font-family: var(--font);
+}
+
+.section-tab:hover { color: var(--text2); }
+.section-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Param area ── */
+
+.param-area {
+  flex: 1;
+  overflow-y: scroll;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.param-area::-webkit-scrollbar { width: 5px; }
+.param-area::-webkit-scrollbar-track { background: transparent; }
+.param-area::-webkit-scrollbar-thumb { background: var(--text3); border-radius: 3px; }
+
+.param-group {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.param-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text3);
+  margin-bottom: 5px;
+  font-weight: 500;
+}
+
+.param-value {
+  color: var(--text2);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.param-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.param-opt {
+  padding: 4px 8px;
+  background: var(--surface3);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all .15s var(--ease);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.param-opt:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.param-opt.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.param-opt.color-swatch {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+}
+
+.param-opt.color-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.toggle-track {
+  width: 32px;
+  height: 18px;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  position: relative;
+  transition: background .2s var(--ease);
+  flex-shrink: 0;
+}
+.toggle-track.on { background: var(--accent); border-color: var(--accent); }
+.toggle-knob {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 12px; height: 12px;
+  background: var(--text);
+  border-radius: 50%;
+  transition: transform .2s var(--ease);
+}
+.toggle-track.on .toggle-knob { transform: translateX(14px); }
+
+.section-info {
+  font-size: 10px;
+  color: var(--text3);
+  text-align: center;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ── Bottom bar ── */
+
+.bottom-bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.btn {
+  flex: 1;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  transition: all .15s var(--ease);
+  font-family: var(--font);
+  border: 1px solid transparent;
+}
+
+.btn-outline {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text2);
+}
+.btn-outline:hover { border-color: var(--text3); color: var(--text); }
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-success {
+  background: #1a6b3c;
+  color: #fff;
+  border-color: #1a6b3c;
+}
+
+/* ── Toast ── */
+
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--surface2);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 8px 16px;
+  font-size: 11px;
+  color: var(--text);
+  opacity: 0;
+  transition: all .3s var(--ease);
+  z-index: 100;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── Range slider ── */
+
+.param-group input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 2px;
+  outline: none;
+  margin: 6px 0;
+}
+.param-group input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--surface);
+}
+.param-group input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--surface);
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 700px) {
+  .app { flex-direction: column; }
+  .right-panel {
+    width: 100%;
+    min-width: 0;
+    flex: 1;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+  .left-panel {
+    height: 150px;
+    min-height: 150px;
+    flex-shrink: 0;
+  }
+  .phone-frame canvas {
+    object-fit: contain;
+    max-width: 100%;
+    max-height: 100%;
+  }
+}
+
+/* ── Shape Tab ── */
+.shape-toolbar { padding: 8px 12px; }
+.btn-add-shape {
+  width: 100%; padding: 10px; border: 1px dashed var(--accent);
+  background: transparent; color: var(--accent); border-radius: 8px;
+  font: 500 13px/1 'DM Sans', sans-serif; cursor: pointer;
+}
+.btn-add-shape:hover { background: var(--accent); color: #fff; }
+.shape-list { max-height: 180px; overflow-y: auto; padding: 4px 12px; }
+.shape-list-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent; margin-bottom: 4px;
+}
+.shape-list-item:hover { background: var(--surface2); }
+.shape-list-item.active { background: var(--surface3); border-color: var(--accent); }
+.shape-swatch {
+  width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+.shape-name { flex: 1; font-size: 12px; color: var(--text); }
+.btn-del-shape {
+  background: none; border: none; color: var(--text3); cursor: pointer;
+  font-size: 14px; padding: 2px 4px; border-radius: 4px;
+}
+.btn-del-shape:hover { background: var(--surface3); color: var(--accent); }
+.shape-props { padding: 8px 12px; border-top: 1px solid var(--border); }
+.shape-empty { padding: 24px 12px; text-align: center; color: var(--text3); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="left-panel">
+    <div class="preview-label">12:00 · Live Preview</div>
+    <div class="phone-frame">
+      <canvas id="previewCanvas" width="240" height="430"></canvas>
+    </div>
+    <div class="phone-notch"></div>
+  </div>
+  <div class="right-panel">
+    <div class="section-tabs" id="sectionTabs">
+      <button class="section-tab active" data-section="hook">Hook Text</button>
+      <button class="section-tab" data-section="subtitle">Subtitle</button>
+      <button class="section-tab" data-section="video">Video</button>
+      <button class="section-tab" data-section="shape">Shape</button>
+    </div>
+    <div class="param-area" id="paramArea"></div>
+    <div class="section-info" id="sectionInfo">Click/tap & drag elements on preview to adjust position</div>
+    <div class="bottom-bar">
+      <button class="btn btn-outline" onclick="resetToDefault()">Reset</button>
+      <button class="btn btn-outline" onclick="exportJSON()">Export</button>
+      <button class="btn btn-success" id="sendBtn" style="display:none" onclick="sendToBot()">Save</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+// ── Telegram Mini App ──
+let tg = null;
+try {
+  tg = window.Telegram?.WebApp;
+  if (tg) {
+    tg.expand(); tg.enableClosingConfirmation();
+    const tp = tg.themeParams;
+    if (tp) {
+      const r = document.documentElement;
+      if (tg.colorScheme === 'dark') {
+        r.style.setProperty('--bg', tp.bg_color || '#0a0a0a');
+        r.style.setProperty('--text', tp.text_color || '#e8e4df');
+        r.style.setProperty('--accent', tp.button_color || '#c45a2c');
+      } else {
+        r.style.setProperty('--bg', tp.bg_color || '#ffffff');
+        r.style.setProperty('--surface', tp.secondary_bg_color || '#f5f5f5');
+        r.style.setProperty('--text', tp.text_color || '#000000');
+        r.style.setProperty('--text2', tp.hint_color || '#888888');
+        r.style.setProperty('--border', tp.section_bg_color || '#dddddd');
+        r.style.setProperty('--accent', tp.button_color || '#c45a2c');
+      }
+    }
+    document.getElementById('sendBtn').style.display = '';
+    tg.MainButton.setText('Simpan Template');
+    tg.MainButton.onClick(() => sendToBot());
+    tg.MainButton.show();
+    if (tg.initDataUnsafe?.user?.id) window._tgUserId = tg.initDataUnsafe.user.id;
+    tg.BackButton.onClick(() => tg.close());
+    tg.BackButton.show();
+  }
+} catch(e) { console.log('Not in Mini App:', e); }
+
+// ── State ──
+const TEMPLATE_DEFAULTS = {
+  hook: {
+    font_size: 82, font_color: "#ffffff",
+    box: true, box_color: "#101010@0.72", box_border_w: 26, box_radius: 0,
+    border_w: 7, border_color: "#000000@0.95",
+    shadow_x: 4, shadow_y: 4, shadow_color: "#000000@0.65",
+    letter_spacing: 0, rotate: 0,
+    y: "230", x: "(w-text_w)/2"
+  },
+  subtitle: {
+    mode: "line", word_animation: "pop",
+    font_size: 46, font_color: "#fff200",
+    outline_color: "#000000", outline: 2, shadow: 0,
+    alignment: 2, margin_v: 60
+  },
+  video: {
+    background_blur: 20, background_blur_power: 5,
+    overlay_enabled: true, width: 1080,
+    x: "(W-w)/2", y: "(H-h)/2",
+    border_w: 0, border_color: "#ffffff@0.70"
+  },
+  shapes: []
+};
+
+const SECTIONS = {
+  hook: [
+    { key: "font_size", label: "Font Size", type: "int", options: [56,64,72,82,86,96,110,130], suffix: "px" },
+    { key: "font_color", label: "Text Color", type: "color", options: ["#ffffff","#fff200","#ff4500","#00ff88","#ff69b4","#00bfff"] },
+    { key: "box", label: "Background Box", type: "bool" },
+    { key: "box_color", label: "Box Color", type: "color", options: ["#1c1717@0.96","#000000@0.85","#000000@0.6","#ffffff@0.3"] },
+    { key: "box_border_w", label: "Box Padding", type: "int", options: [10,16,20,24,30,40], suffix: "px" },
+    { key: "box_radius", label: "Rounded Corners", type: "int", options: [0,8,12,20,30,42,60], suffix: "px" },
+    { key: "border_w", label: "Text Border", type: "int", options: [0,2,4,6,8], suffix: "px" },
+    { key: "border_color", label: "Border Color", type: "color", options: ["#000000","#ffffff","#ff4500","#ff0000"] },
+    { key: "shadow_x", label: "Shadow X", type: "int", options: [0,2,4,6,8,10], suffix: "px" },
+    { key: "shadow_y", label: "Shadow Y", type: "int", options: [0,2,4,6,8,10], suffix: "px" },
+    { key: "shadow_color", label: "Shadow Color", type: "color", options: ["#000000@0.65","#000000@0.8","#000000@0.4"] },
+    { key: "letter_spacing", label: "Letter Spacing", type: "int", options: [-2,0,1,2,3,5], suffix: "px" },
+    { key: "rotate", label: "Rotation", type: "int", options: [-4,-2,0,2,4], suffix: "°" },
+    { key: "y", label: "Vertical Position", type: "choice", options: ["230","100","500","900","1200","(h-text_h)/2"] },
+    { key: "x", label: "Horizontal Position", type: "choice", options: ["118","(w-text_w)/2","50","200","(w-text_w)/3*2"] }
+  ],
+  subtitle: [
+    { key: "mode", label: "Mode", type: "choice", options: ["line","word"] },
+    { key: "word_animation", label: "Word Animation", type: "choice", options: ["pop","fade","pulse","none"] },
+    { key: "font_size", label: "Font Size", type: "int", options: [32,36,40,44,46,52,60], suffix: "px" },
+    { key: "font_color", label: "Text Color", type: "color", options: ["#fff200","#ffffff","#f5f0e8","#00ff88"] },
+    { key: "outline_color", label: "Outline Color", type: "color", options: ["#000000","#111111","#1a73e8"] },
+    { key: "outline", label: "Outline Width", type: "int", options: [0,1,2,3,4], suffix: "px" },
+    { key: "shadow", label: "Shadow Depth", type: "int", options: [0,1,2,3] },
+    { key: "alignment", label: "Alignment", type: "choice", options: ["1 (bottom-left)","2 (bottom-center)","3 (bottom-right)","8 (top-center)"] },
+    { key: "margin_v", label: "Vertical Margin", type: "int", options: [40,60,80,100,150,200,400,787], suffix: "px" }
+  ],
+  video: [
+    { key: "background_blur", label: "Blur Strength", type: "int", options: [5,10,15,20,25,35,50] },
+    { key: "background_blur_power", label: "Blur Power", type: "int", options: [2,3,5,7] },
+    { key: "overlay_enabled", label: "Overlay Video", type: "bool" },
+    { key: "width", label: "Video Width", type: "range", min: 40, max: 3000, step: 10, suffix: "px" },
+    { key: "x", label: "Overlay X", type: "choice", options: ["(W-w)/2","0","50","100","200","(W-w)"] },
+    { key: "y", label: "Overlay Y", type: "choice", options: ["(H-h)/2","0","100","200","400","(H-h)"] },
+    { key: "border_w", label: "Border Width", type: "int", options: [0,2,4,6,8], suffix: "px" },
+    { key: "border_color", label: "Border Color", type: "color", options: ["#ffffff@0.70","#ff4500@0.6","#000000@0.5"] }
+  ]
+};
+
+const SHAPE_FIELDS = [
+  { key: "type", label: "Type", type: "choice", options: ["rectangle","circle","ellipse","triangle","diamond","star","heart"] },
+  { key: "color", label: "Fill Color", type: "color", options: ["#c45a2c@0.6","#ffffff@0.3","#ff4500@0.5","#000000@0.5","#00ff88@0.4"] },
+  { key: "opacity", label: "Opacity", type: "int", options: [10,20,30,40,50,60,70,80,90,100], suffix: "%" },
+  { key: "width", label: "Width", type: "int", options: [40,60,80,100,120,160,200,300,400], suffix: "px" },
+  { key: "height", label: "Height", type: "int", options: [40,60,80,100,120,160,200,300,400], suffix: "px" },
+  { key: "feather", label: "Feather", type: "int", options: [0,2,4,6,8,10,15,20,30], suffix: "px" },
+  { key: "mask", label: "Mask Mode", type: "bool" },
+  { key: "border_w", label: "Border Width", type: "int", options: [0,2,4,6,8], suffix: "px" },
+  { key: "border_color", label: "Border Color", type: "color", options: ["#ffffff@1","#000000@1","#c45a2c@1","#ff4500@1"] },
+  { key: "x", label: "Pos X", type: "choice", options: ["(W-w)/2","0","50","100","200"] },
+  { key: "y", label: "Pos Y", type: "choice", options: ["(H-h)/2","0","50","100","200","300"] },
+  { key: "rotation", label: "Rotation", type: "int", options: [0,15,30,45,90,135,180,270], suffix: "°" }
+];
+
+let selectedShapeIdx = -1;
+
+// ── DOM refs ──
+
+const paramArea = document.getElementById("paramArea");
+const canvas = document.getElementById("previewCanvas");
+const ctx = canvas.getContext("2d");
+const toastEl = document.getElementById("toast");
+const sectionInfo = document.getElementById("sectionInfo");
+
+// ── Color helpers ──
+
+const NAMED_COLORS = {
+  white: [255,255,255], black: [0,0,0], red: [255,0,0],
+  green: [0,255,0], blue: [0,0,255], yellow: [255,255,0],
+  orange: [255,165,0], pink: [255,192,203], purple: [128,0,128],
+  cyan: [0,255,255], gray: [128,128,128]
+};
+
+function hexToRgb(h) {
+  if (!h || typeof h !== "string") return [255,255,255];
+  let s = h.replace(/^#/,"");
+  if (s.length===3) s=s[0]+s[0]+s[1]+s[1]+s[2]+s[2];
+  const n = parseInt(s, 16);
+  if (isNaN(n) || s.length<6) return [255,255,255];
+  return [(n>>16)&255, (n>>8)&255, n&255];
+}
+
+function rgbaStr(val) {
+  if (!val) return "rgba(255,255,255,1)";
+  if (val.startsWith("rgba")||val.startsWith("rgb")) return val;
+  const m = val.match(/^#?([0-9a-fA-F]{6})@?([\d.]+)?/);
+  if (m) { const [r,g,b]=hexToRgb("#"+m[1]); return `rgba(${r},${g},${b},${m[2]??1})`; }
+  const p = val.split("@");
+  const c = NAMED_COLORS[p[0].toLowerCase()];
+  if (c) return `rgba(${c[0]},${c[1]},${c[2]},${p[1]??1})`;
+  return val;
+}
+
+// ── Render controls ──
+
+let template = JSON.parse(JSON.stringify(TEMPLATE_DEFAULTS));
+let currentSection = "hook";
+
+function renderSection(section) {
+  currentSection = section;
+  if (section === "shape") { renderShapeTab(); return; }
+  const secData = template[section];
+  const fields = SECTIONS[section];
+  let html = "";
+  for (const def of fields) {
+    const val = secData[def.key] !== undefined ? secData[def.key] : TEMPLATE_DEFAULTS[section][def.key];
+    html += `<div class="param-group"><div class="param-label"><span>${def.label}</span><span class="param-value" id="val_${section}_${def.key}">${def.type==="bool"?"":def.type==="color"?val:(val+(def.suffix||""))}</span></div>`;
+    if (def.type === "bool") {
+      const on = val === true || val === "true" || val === 1;
+      html += `<div class="toggle-track${on?" on":""}" data-section="${section}" data-key="${def.key}" onclick="toggleBool('${section}','${def.key}')"><div class="toggle-knob"></div></div>`;
+    } else if (def.type === "color") {
+      html += `<div class="param-options">`;
+      for (const o of def.options) {
+        const a = o === val;
+        html += `<div class="param-opt color-swatch${a?" active":""}" style="background:${rgbaStr(o)}" onclick="setVal('${section}','${def.key}','${o.replace(/'/g,"\\'")}',this)"></div>`;
+      }
+      html += `</div>`;
+    } else if (def.type === "range") {
+      html += `<input type="range" min="${def.min}" max="${def.max}" step="${def.step||1}" value="${val}" data-section="${section}" data-key="${def.key}" oninput="rangeVal(this)">`;
+    } else {
+      html += `<div class="param-options">`;
+      for (const o of def.options) {
+        const a = String(o) === String(val);
+        html += `<div class="param-opt${a?" active":""}" onclick="setVal('${section}','${def.key}','${o}'.replace(/^'(.*)'$/,'$1'),this)">${o}${def.suffix||""}</div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+  paramArea.innerHTML = html;
+}
+
+const SHAPE_DEFAULTS = {
+  type: "rectangle", color: "#c45a2c@0.6", opacity: 60,
+  width: 120, height: 120, feather: 0, mask: false,
+  border_w: 0, border_color: "#ffffff@1",
+  x: "(W-w)/2", y: "(H-h)/2", rotation: 0
+};
+
+function renderShapeTab() {
+  const shapes = template.shapes || [];
+  let html = `<div class="shape-toolbar"><button class="btn-add-shape" onclick="addShape()">+ Add Shape</button></div>`;
+  html += `<div class="shape-list">`;
+  for (let i = 0; i < shapes.length; i++) {
+    const s = shapes[i];
+    const active = i === selectedShapeIdx ? " active" : "";
+    const swatch = rgbaStr(s.color || "#c45a2c@0.6");
+    html += `<div class="shape-list-item${active}" onclick="selectShape(${i})">
+      <span class="shape-swatch" style="background:${swatch}"></span>
+      <span class="shape-name">${s.type || "rectangle"} ${i+1}</span>
+      <button class="btn-del-shape" onclick="event.stopPropagation();deleteShape(${i})">✕</button>
+    </div>`;
+  }
+  html += `</div>`;
+
+  if (selectedShapeIdx >= 0 && selectedShapeIdx < shapes.length) {
+    const s = shapes[selectedShapeIdx];
+    html += `<div class="shape-props">`;
+    for (const def of SHAPE_FIELDS) {
+      const val = s[def.key] !== undefined ? s[def.key] : SHAPE_DEFAULTS[def.key];
+      html += `<div class="param-group"><div class="param-label"><span>${def.label}</span><span class="param-value" id="val_shape_${def.key}">${def.type==="bool"?"":def.type==="color"?val:(val+(def.suffix||""))}</span></div>`;
+      if (def.type === "bool") {
+        const on = val === true || val === "true" || val === 1;
+        html += `<div class="toggle-track${on?" on":""}" data-sidx="${selectedShapeIdx}" data-key="${def.key}" onclick="toggleShapeBool(${selectedShapeIdx},'${def.key}')"><div class="toggle-knob"></div></div>`;
+      } else if (def.type === "color") {
+        html += `<div class="param-options">`;
+        for (const o of def.options) {
+          const a = o === val;
+          html += `<div class="param-opt color-swatch${a?" active":""}" style="background:${rgbaStr(o)}" onclick="setShapeVal(${selectedShapeIdx},'${def.key}','${o.replace(/'/g,"\\'")}',this)"></div>`;
+        }
+        html += `</div>`;
+      } else {
+        html += `<div class="param-options">`;
+        for (const o of def.options) {
+          const a = String(o) === String(val);
+          html += `<div class="param-opt${a?" active":""}" onclick="setShapeVal(${selectedShapeIdx},'${def.key}','${o}'.replace(/^'(.*)'$/,'$1'),this)">${o}${def.suffix||""}</div>`;
+        }
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+  } else if (shapes.length === 0) {
+    html += `<p class="shape-empty">No shapes yet. Click "+ Add Shape" to start.</p>`;
+  } else {
+    html += `<p class="shape-empty">Click a shape above to edit its properties.</p>`;
+  }
+  paramArea.innerHTML = html;
+}
+
+function addShape() {
+  if (!template.shapes) template.shapes = [];
+  const def = { ...SHAPE_DEFAULTS };
+  // Offset new shapes slightly so they don't all stack on center
+  const offset = template.shapes.length * 20;
+  def.x = String(offset);
+  def.y = String(offset);
+  template.shapes.push(def);
+  selectedShapeIdx = template.shapes.length - 1;
+  renderShapeTab();
+  schedulePreview();
+}
+
+function deleteShape(idx) {
+  template.shapes.splice(idx, 1);
+  if (selectedShapeIdx >= template.shapes.length) selectedShapeIdx = template.shapes.length - 1;
+  if (selectedShapeIdx < 0) selectedShapeIdx = -1;
+  renderShapeTab();
+  schedulePreview();
+}
+
+function selectShape(idx) {
+  selectedShapeIdx = idx;
+  renderShapeTab();
+  schedulePreview();
+}
+
+function setShapeVal(idx, key, val, el) {
+  const n = Number(val);
+  template.shapes[idx][key] = isNaN(n) ? val : n;
+  if (el) {
+    el.parentElement.querySelectorAll(".param-opt").forEach(c=>c.classList.remove("active"));
+    el.classList.add("active");
+  }
+  updateShapeVal(idx, key, template.shapes[idx][key]);
+  schedulePreview();
+}
+
+function toggleShapeBool(idx, key) {
+  template.shapes[idx][key] = !template.shapes[idx][key];
+  const el = document.querySelector(`.toggle-track[data-sidx="${idx}"][data-key="${key}"]`);
+  if (el) el.classList.toggle("on");
+  updateShapeVal(idx, key, template.shapes[idx][key]);
+  schedulePreview();
+}
+
+function updateShapeVal(idx, key, val) {
+  const el = document.getElementById(`val_shape_${key}`);
+  if (!el) return;
+  const def = SHAPE_FIELDS.find(f=>f.key===key);
+  if (def && def.type==="bool") { el.textContent = ""; return; }
+  el.textContent = val + (def?.suffix||"");
+}
+
+function setVal(section, key, val, el) {
+  const n = Number(val);
+  template[section][key] = isNaN(n) ? val : n;
+  if (el) {
+    el.parentElement.querySelectorAll(".param-opt").forEach(c=>c.classList.remove("active"));
+    el.classList.add("active");
+  }
+  updateVal(section, key, template[section][key]);
+  schedulePreview();
+}
+
+function toggleBool(section, key) {
+  template[section][key] = !template[section][key];
+  const el = document.querySelector(`.toggle-track[data-section="${section}"][data-key="${key}"]`);
+  if (el) el.classList.toggle("on");
+  updateVal(section, key, template[section][key]);
+  schedulePreview();
+}
+
+function updateVal(section, key, val) {
+  const el = document.getElementById(`val_${section}_${key}`);
+  if (!el) return;
+  const def = SECTIONS[section].find(f=>f.key===key);
+  if (def && def.type==="bool") { el.textContent = ""; return; }
+  el.textContent = val + (def?.suffix||"");
+}
+
+function rangeVal(input) {
+  const val = parseInt(input.value);
+  template[input.dataset.section][input.dataset.key] = val;
+  updateVal(input.dataset.section, input.dataset.key, val);
+  schedulePreview();
+}
+
+// ── Preview rendering ──
+
+function schedulePreview() {
+  if (window._pv) cancelAnimationFrame(window._pv);
+  window._pv = requestAnimationFrame(drawPreview);
+}
+
+function drawPreview() {
+  const W = 240, H = 430;
+  ctx.clearRect(0, 0, W, H);
+
+  // Deep background
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#16110e");
+  bg.addColorStop(0.4, "#0f0d0b");
+  bg.addColorStop(1, "#080706");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle grid
+  ctx.strokeStyle = "rgba(255,255,255,0.02)";
+  ctx.lineWidth = .5;
+  for (let x=0; x<W; x+=20) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y=0; y<H; y+=20) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  const hook = template.hook, video = template.video, sub = template.subtitle;
+  const S = W/1080;
+
+  // Video area — blurred background + landscape overlay
+  const vx = 12, vy = 42, vw = W-24, vh = H-84;
+  _vx = vx; _vy = vy;
+  const blur = video.background_blur ?? 20;
+  const overlayOn = video.overlay_enabled !== false;
+
+  // ── Blurred background (full video card) ──
+  ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 16;
+  ctx.fillStyle = "#181614";
+  ctx.beginPath(); ctx.roundRect(vx, vy, vw, vh, 4); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Subtle vignette on background
+  const vig = ctx.createRadialGradient(vx+vw/2, vy+vh/2, 0, vx+vw/2, vy+vh/2, vw*0.7);
+  vig.addColorStop(0, "rgba(60,50,42,0.12)");
+  vig.addColorStop(0.5, "rgba(60,50,42,0.05)");
+  vig.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = vig;
+  ctx.beginPath(); ctx.roundRect(vx, vy, vw, vh, 4); ctx.fill();
+
+  // Simulate blur overlay
+  if (blur > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${Math.min(blur/60, 0.35)})`;
+    ctx.beginPath(); ctx.roundRect(vx, vy, vw, vh, 4); ctx.fill();
+  }
+
+  // ── Landscape video overlay ──
+  if (overlayOn) {
+    const ovW = Math.max(40, (video.width ?? 1080) * (vw/1080));
+    const ovH = ovW * 9/16;
+    const evalOverlay = (expr, def) => {
+      if (!expr || expr === "0") return 0;
+      const m = expr.match(/^\(W-w\)\/2$/);
+      if (m) return (vw - ovW) / 2;
+      const m2 = expr.match(/^\(H-h\)\/2$/);
+      if (m2) return (vh - ovH) / 2;
+      const n = parseInt(expr);
+      return isNaN(n) ? def : n;
+    };
+    const ox = vx + evalOverlay(video.x, (vw-ovW)/2);
+    const oy = vy + evalOverlay(video.y, (vh-ovH)/2);
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.4)"; ctx.shadowBlur = 8;
+    ctx.fillStyle = "#2a2520";
+    ctx.beginPath(); ctx.roundRect(ox, oy, ovW, ovH, 3); ctx.fill();
+    ctx.shadowBlur = 0;
+
+    const vGrad = ctx.createLinearGradient(ox, oy, ox+ovW, oy+ovH);
+    vGrad.addColorStop(0, "rgba(70,55,45,0.5)");
+    vGrad.addColorStop(0.5, "rgba(40,50,60,0.5)");
+    vGrad.addColorStop(1, "rgba(50,40,55,0.5)");
+    ctx.fillStyle = vGrad;
+    ctx.beginPath(); ctx.roundRect(ox, oy, ovW, ovH, 3); ctx.fill();
+
+    const ps = ovW * 0.15;
+    ctx.fillStyle = "rgba(255,255,255,0.2)";
+    ctx.beginPath(); ctx.arc(ox+ovW/2, oy+ovH/2, ps, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.beginPath(); ctx.moveTo(ox+ovW/2 - ps*0.35, oy+ovH/2 - ps*0.45);
+    ctx.lineTo(ox+ovW/2 + ps*0.5, oy+ovH/2);
+    ctx.lineTo(ox+ovW/2 - ps*0.35, oy+ovH/2 + ps*0.45);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+
+    if (video.border_w > 0 && video.border_color) {
+      ctx.strokeStyle = rgbaStr(video.border_color);
+      ctx.lineWidth = Math.max(video.border_w * S, 1);
+      ctx.beginPath(); ctx.roundRect(ox, oy, ovW, ovH, 3); ctx.stroke();
+    }
+
+    elementBounds.video = { bx: ox-4, by: oy-4, bw: ovW+8, bh: ovH+8 };
+  }
+
+  // ── Shapes overlay (array) ──
+  const shapes = template.shapes || [];
+  const evalShape = (expr, def) => {
+    if (!expr || expr === "0") return 0;
+    const n = parseInt(expr);
+    return isNaN(n) ? def : n;
+  };
+
+  function drawOneShape(sh, idx) {
+    const sw = (sh.width ?? 120) * S;
+    const shH = (sh.height ?? 120) * S;
+    const sx = evalShape(sh.x, (vw-sw)/2);
+    const sy = evalShape(sh.y, (vh-shH)/2);
+    const sc = rgbaStr(sh.color || "#c45a2c@0.6");
+    const alpha = (sh.opacity ?? 60) / 100;
+    const feather = (sh.feather ?? 0) * S;
+    const rotation = ((sh.rotation ?? 0) * Math.PI) / 180;
+    const cx = vx + sx + sw/2, cy = vy + sy + shH/2;
+    const rw = sw/2, rh = shH/2;
+
+    function shapePath(ctx) {
+      ctx.beginPath();
+      switch (sh.type) {
+        case "circle": { const r = Math.min(rw, rh); ctx.arc(0, 0, r, 0, Math.PI*2); break; }
+        case "ellipse": { ctx.ellipse(0, 0, rw, rh, 0, 0, Math.PI*2); break; }
+        case "triangle": { ctx.moveTo(0, -rh); ctx.lineTo(-rw, rh); ctx.lineTo(rw, rh); ctx.closePath(); break; }
+        case "diamond": { ctx.moveTo(0, -rh); ctx.lineTo(rw, 0); ctx.lineTo(0, rh); ctx.lineTo(-rw, 0); ctx.closePath(); break; }
+        case "star": {
+          const spikes = 5; const outerR = Math.max(rw, rh); const innerR = outerR * 0.4;
+          for (let i=0; i<spikes*2; i++) {
+            const r = i%2===0 ? outerR : innerR;
+            const angle = (i * Math.PI / spikes) - Math.PI/2;
+            const px = r * Math.cos(angle), py = r * Math.sin(angle);
+            i===0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          }
+          ctx.closePath(); break;
+        }
+        case "heart": {
+          ctx.moveTo(0, rh * 0.3);
+          ctx.bezierCurveTo(rw*1.2, -rh*0.3, rw*0.4, -rh*1.2, 0, -rh*0.6);
+          ctx.bezierCurveTo(-rw*0.4, -rh*1.2, -rw*1.2, -rh*0.3, 0, rh*0.3);
+          break;
+        }
+        default: { ctx.roundRect(-rw, -rh, sw, shH, 2); break; }
+      }
+    }
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (rotation) ctx.rotate(rotation);
+    ctx.filter = feather > 0 ? `blur(${feather}px)` : "none";
+    if (sh.mask) {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(255,255,255,1)";
+    } else {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = sc;
+    }
+    shapePath(ctx);
+    ctx.fill();
+    ctx.restore();
+
+    if (sh.border_w > 0 && sh.border_color && !sh.mask) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      if (rotation) ctx.rotate(rotation);
+      ctx.strokeStyle = rgbaStr(sh.border_color);
+      ctx.lineWidth = Math.max(sh.border_w * S, 1);
+      ctx.globalAlpha = alpha;
+      shapePath(ctx);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    elementBounds["shape_" + idx] = { bx: vx+sx-4, by: vy+sy-4, bw: sw+8, bh: shH+8 };
+  }
+
+  for (let i = 0; i < shapes.length; i++) {
+    drawOneShape(shapes[i], i);
+  }
+
+  // Subtle text lines placeholder on the blurred bg
+  ctx.fillStyle = "rgba(255,255,255,0.04)";
+  const lineY = vy + vh - 28;
+  for (let i=0; i<3; i++) {
+    const lw = [vw*0.4, vw*0.28, vw*0.18][i];
+    ctx.fillRect(vx+16, lineY + i*8, lw, 2);
+  }
+
+  // ── Subtitle preview ──
+  const subY = H - 56 - (sub.margin_v ?? 60) * S;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const subSize = Math.max(sub.font_size * S * .5, 10);
+  if (sub.outline > 0) {
+    ctx.font = `700 ${subSize}px 'DM Sans', sans-serif`;
+    ctx.strokeStyle = rgbaStr(sub.outline_color);
+    ctx.lineWidth = sub.outline * S;
+    ctx.strokeText("Contoh subtitle video", W/2, subY);
+  }
+  ctx.font = `700 ${subSize}px 'DM Sans', sans-serif`;
+  ctx.fillStyle = rgbaStr(sub.font_color);
+  ctx.fillText("Contoh subtitle video", W/2, subY);
+  const subW = ctx.measureText("Contoh subtitle video").width;
+  elementBounds.subtitle = { bx: W/2 - subW/2 - 4, by: subY - subSize/2 - 4, bw: subW + 8, bh: subSize + 8 };
+
+  // ── Hook ──
+  const hText = "Judul Video\nYang Menarik";
+  const lines = hText.split("\n");
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const hookY = parseInt(hook.y) || 160;
+  const fs = Math.max(hook.font_size * S, 13);
+  const lh = fs * 1.2;
+  const th = lines.length * lh;
+  let hookBX, hookBY, hookBW, hookBH;
+  // Compute actual horizontal position from hook.x (supports "(w-text_w)/2" formula)
+  const tempMeasure = ctx.measureText(hText);
+  const hTextW = tempMeasure.width;
+  let hx;
+  const xRaw = String(hook.x ?? "");
+  if (xRaw.includes("w") || xRaw.includes("text_w")) {
+    try { hx = eval(xRaw.replace(/text_w/g, String(hTextW)).replace(/w/g, "W")); } catch { hx = W/2; }
+  } else {
+    hx = parseInt(xRaw) || W/2;
+  }
+
+  if (hook.box && hook.box_color) {
+    const mw = Math.max(...lines.map(l=>ctx.measureText(l).width));
+    const pd = (hook.box_border_w||26)*S;
+    hookBX = hx-mw/2-pd; hookBY = hookY-th/2-pd/2; hookBW = mw+pd*2; hookBH = th+pd;
+    ctx.fillStyle = rgbaStr(hook.box_color);
+    const r = (hook.box_radius||0)*S;
+    ctx.beginPath(); ctx.roundRect(hookBX, hookBY, hookBW, hookBH, Math.max(r,1)); ctx.fill();
+  } else {
+    const mw = Math.max(...lines.map(l=>ctx.measureText(l).width));
+    hookBX = hx - mw/2 - 4; hookBY = hookY - th/2 - 4; hookBW = mw + 8; hookBH = th + 8;
+  }
+
+  if (hook.shadow_x||hook.shadow_y) {
+    ctx.shadowColor = rgbaStr(hook.shadow_color||"#000000@0.65");
+    ctx.shadowBlur = 2; ctx.shadowOffsetX = (hook.shadow_x||0)*S; ctx.shadowOffsetY = (hook.shadow_y||0)*S;
+  }
+
+  ctx.font = `700 ${fs}px 'DM Sans', sans-serif`;
+  if (hook.border_w > 0) {
+    ctx.strokeStyle = rgbaStr(hook.border_color||"#000000@0.95");
+    ctx.lineWidth = (hook.border_w||0)*S*.6; ctx.lineJoin = "round";
+    lines.forEach((l,i) => ctx.strokeText(l, hx, hookY + (i-(lines.length-1)/2)*lh));
+  }
+
+  ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
+  ctx.fillStyle = rgbaStr(hook.font_color);
+  lines.forEach((l,i) => ctx.fillText(l, hx, hookY + (i-(lines.length-1)/2)*lh));
+
+  elementBounds.hook = { bx: hookBX, by: hookBY, bw: hookBW, bh: hookBH };
+
+  if (hook.rotate) {
+    ctx.fillStyle = "rgba(255,255,255,.15)"; ctx.font = "8px 'DM Sans', sans-serif";
+    ctx.textAlign = "right"; ctx.fillText(`Rot ${hook.rotate}°`, W-6, H-6);
+  }
+
+  // ── Selection handles ──
+  if (selected && elementBounds[selected]) {
+    const b = elementBounds[selected];
+    ctx.strokeStyle = "#c45a2c";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeRect(b.bx, b.by, b.bw, b.bh);
+    ctx.setLineDash([]);
+    const hs = 8;
+    ctx.fillStyle = "#c45a2c";
+    [
+      [b.bx+b.bw, b.by+b.bh],
+      [b.bx,       b.by+b.bh],
+      [b.bx+b.bw, b.by      ],
+      [b.bx,       b.by      ]
+    ].forEach(([hx, hy]) => {
+      ctx.fillRect(hx-hs/2, hy-hs/2, hs, hs);
+    });
+  }
+}
+
+// ── Interactive preview (pointer events unified + touch pinch) ──
+
+let selected = null;           // "hook" | "subtitle" | "video" | "shape_N" | null
+let dragState = null;          // { type: "move"|"resize"|"zoom", startX, startY, ... }
+let elementBounds = {};        // { hook: {bx,by,bw,bh}, subtitle: {bx,by,bw,bh}, video: {bx,by,bw,bh} }
+let _vx = 0, _vy = 0;         // video area origin (canvas coords), set by drawPreview
+let _pinchDist = 0;
+let _inPinch = false; // blocks pointerdown during pinch zoom
+
+function getCanvasCoords(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (canvas.width / r.width), y: (e.clientY - r.top) * (canvas.height / r.height) };
+}
+
+function hitTestElement(cx, cy, pad = 8) {
+  for (const el of ["subtitle", "hook", "video"]) {
+    const b = elementBounds[el];
+    if (!b) continue;
+    if (cx >= b.bx - pad && cx <= b.bx + b.bw + pad && cy >= b.by - pad && cy <= b.by + b.bh + pad) return el;
+  }
+  // Check shapes in reverse order (topmost first) with bigger hit area
+  if (template.shapes && template.shapes.length) {
+    const spad = 10;
+    for (let i = template.shapes.length - 1; i >= 0; i--) {
+      const b = elementBounds["shape_" + i];
+      if (!b) continue;
+      if (cx >= b.bx - spad && cx <= b.bx + b.bw + spad && cy >= b.by - spad && cy <= b.by + b.bh + spad) return "shape_" + i;
+    }
+  }
+  return null;
+}
+
+function handleSizeHit(cx, cy) {
+  const el = selected;
+  if (!el) return false;
+  const b = elementBounds[el];
+  if (!b) return false;
+  const s = 8;
+  return (Math.abs(cx - (b.bx+b.bw)) < s && Math.abs(cy - (b.by+b.bh)) < s) ||
+         (Math.abs(cx - b.bx) < s && Math.abs(cy - (b.by+b.bh)) < s) ||
+         (Math.abs(cx - (b.bx+b.bw)) < s && Math.abs(cy - b.by) < s) ||
+         (Math.abs(cx - b.bx) < s && Math.abs(cy - b.by) < s) ? true : false;
+}
+
+function handleMoveDrag(dx, dy) {
+  if (dragState.el === "hook") {
+    const origX = dragState.origX != null ? dragState.origX : 120;
+    const origY = dragState.origY != null ? dragState.origY : 160;
+    const newX = Math.round(origX + dx);
+    const newY = Math.round(origY + dy);
+    template.hook.x = String(newX);
+    template.hook.y = String(newY);
+    const xEl = document.getElementById("val_hook_x");
+    const yEl = document.getElementById("val_hook_y");
+    if (xEl) xEl.textContent = newX;
+    if (yEl) yEl.textContent = newY;
+  }
+  if (dragState.el === "subtitle") {
+    const origMV = dragState.origMV;
+    const newMV = Math.round(origMV + dy);
+    template.subtitle.margin_v = newMV;
+    const el = document.getElementById("val_subtitle_margin_v");
+    if (el) el.textContent = newMV + "px";
+  }
+  if (dragState.el === "video") {
+    const origX = dragState.origX != null ? dragState.origX : 0;
+    const origY = dragState.origY != null ? dragState.origY : 0;
+    const newX = Math.round(origX + dx);
+    const newY = Math.round(origY + dy);
+    template.video.x = String(newX);
+    template.video.y = String(newY);
+    const xEl = document.getElementById("val_video_x");
+    const yEl = document.getElementById("val_video_y");
+    if (xEl) xEl.textContent = newX;
+    if (yEl) yEl.textContent = newY;
+  }
+  if (dragState.el === "shape" && dragState.shapeIdx !== undefined) {
+    const idx = dragState.shapeIdx;
+    const origX = dragState.origX != null ? dragState.origX : 0;
+    const origY = dragState.origY != null ? dragState.origY : 0;
+    const newX = Math.round(origX + dx);
+    const newY = Math.round(origY + dy);
+    template.shapes[idx].x = String(newX);
+    template.shapes[idx].y = String(newY);
+    const xEl = document.getElementById("val_shape_x");
+    const yEl = document.getElementById("val_shape_y");
+    if (xEl) xEl.textContent = newX;
+    if (yEl) yEl.textContent = newY;
+  }
+}
+
+function handleResizeDrag(dy) {
+  const scale = 1 + dy / 100;
+  if (dragState.origFontSize !== undefined) {
+    const newSize = Math.round(dragState.origFontSize * scale);
+    const clamped = Math.max(1, newSize);
+    template[dragState.el].font_size = clamped;
+    const el = document.getElementById(`val_${dragState.el}_font_size`);
+    if (el) el.textContent = clamped + "px";
+  } else if (dragState.origWidth !== undefined && dragState.el !== "shape") {
+    const newW = Math.round(dragState.origWidth * scale);
+    const clamped = Math.max(1, newW);
+    template.video.width = clamped;
+    const el = document.getElementById("val_video_width");
+    if (el) el.textContent = clamped + "px";
+  } else if (dragState.el === "shape" && dragState.shapeIdx !== undefined) {
+    const newW = Math.round(dragState.origWidth * scale);
+    const newH = Math.round(dragState.origHeight * scale);
+    const clampedW = Math.max(1, newW);
+    const clampedH = Math.max(1, newH);
+    const si = dragState.shapeIdx;
+    template.shapes[si].width = clampedW;
+    template.shapes[si].height = clampedH;
+    const wEl = document.getElementById("val_shape_width");
+    const hEl = document.getElementById("val_shape_height");
+    if (wEl) wEl.textContent = clampedW + "px";
+    if (hEl) hEl.textContent = clampedH + "px";
+  }
+}
+
+// ── Primary: Pointer Events (unified for mouse AND touch single-finger) ──
+
+canvas.addEventListener("pointerdown", function(e) {
+  if (e.isPrimary === false) return;
+  if (_inPinch) return; // pinch zoom in progress, ignore
+  const p = getCanvasCoords(e);
+  const isResize = handleSizeHit(p.x, p.y);
+  if (isResize && selected) {
+    const el = selected;
+    const key = { hook: "font_size", subtitle: "font_size", video: "width" }[el];
+    if (key === "font_size") {
+      dragState = { type: "resize", el, startX: p.x, startY: p.y, origFontSize: template[el].font_size };
+    } else if (key === "width") {
+      dragState = { type: "resize", el, startX: p.x, startY: p.y, origWidth: template.video.width };
+    } else if (el.startsWith("shape_")) {
+      const shapeIdx = parseInt(el.replace("shape_", ""));
+      const s = template.shapes[shapeIdx];
+      if (s) dragState = { type: "resize", el: "shape", shapeIdx, startX: p.x, startY: p.y, origWidth: s.width || 120, origHeight: s.height || 120 };
+    }
+    return;
+  }
+  const hit = hitTestElement(p.x, p.y);
+  if (hit) {
+    selected = hit;
+    if (hit.startsWith && hit.startsWith("shape_")) {
+      const shapeIdx = parseInt(hit.replace("shape_", ""));
+      const b = elementBounds[hit];
+      dragState = {
+        type: "move", el: "shape", shapeIdx,
+        startX: p.x, startY: p.y,
+        origX: b ? Math.round(b.bx + 4 - _vx) : 0,
+        origY: b ? Math.round(b.by + 4 - _vy) : 0,
+      };
+    } else {
+      const b = elementBounds[hit];
+      let ox, oy;
+      if (hit === "video" && b) {
+        ox = Math.round(b.bx + 4 - _vx);
+        oy = Math.round(b.by + 4 - _vy);
+      } else if (b) {
+        ox = Math.round(b.bx + b.bw / 2);
+        oy = Math.round(b.by + b.bh / 2);
+      } else {
+        ox = hit === "video" ? template.video.x : template[hit].x;
+        oy = hit === "video" ? template.video.y : template[hit].y;
+      }
+      dragState = {
+        type: "move", el: hit,
+        startX: p.x, startY: p.y,
+        origX: ox,
+        origY: oy,
+        origMV: template.subtitle.margin_v
+      };
+    }
+    schedulePreview();
+    return;
+  }
+  selected = null;
+  dragState = null;
+  schedulePreview();
+});
+
+canvas.addEventListener("pointermove", function(e) {
+  if (!dragState || dragState.type === "zoom") return;
+  if (e.isPrimary === false) return;
+  const p = getCanvasCoords(e);
+  const dx = p.x - dragState.startX;
+  const dy = p.y - dragState.startY;
+  if (dragState.type === "move") handleMoveDrag(dx, dy);
+  if (dragState.type === "resize") handleResizeDrag(dy);
+  schedulePreview();
+});
+
+// Cursor feedback on canvas
+canvas.addEventListener("pointermove", function(e) {
+  const p = getCanvasCoords(e);
+  const overHandle = selected && handleSizeHit(p.x, p.y);
+  const overEl = !overHandle && hitTestElement(p.x, p.y);
+  canvas.style.cursor = overHandle ? "nwse-resize" : overEl ? "grab" : "default";
+});
+
+canvas.addEventListener("pointerup", function() {
+  if (dragState && dragState.type !== "zoom") {
+    if (dragState.el) renderSection(currentSection);
+    dragState = null;
+  }
+});
+
+canvas.addEventListener("pointercancel", function() {
+  if (dragState && dragState.type !== "zoom") {
+    if (dragState.el) renderSection(currentSection);
+    dragState = null;
+  }
+});
+
+// ── Touch events: ONLY for 2-finger pinch zoom ──
+
+canvas.addEventListener("touchstart", function(e) {
+  if (e.touches.length >= 2 && elementBounds.video) {
+    _inPinch = true;
+    e.preventDefault();
+    _pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    dragState = { type: "zoom", el: "video", origWidth: template.video.width };
+    selected = "video";
+    schedulePreview();
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchmove", function(e) {
+  if (dragState && dragState.type === "zoom" && e.touches.length >= 2) {
+    e.preventDefault();
+    const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    const scale = dist / _pinchDist;
+    const newW = Math.max(40, Math.round(dragState.origWidth * scale));
+    template.video.width = newW;
+    const el = document.getElementById("val_video_width");
+    if (el) el.textContent = newW + "px";
+    schedulePreview();
+  }
+  // 1-finger: pointermove handles drag, do nothing here
+}, { passive: false });
+
+canvas.addEventListener("touchend", function(e) {
+  if (dragState && dragState.type === "zoom") {
+    e.preventDefault();
+    if (dragState.el) renderSection(currentSection);
+    _inPinch = false;
+    _pinchDist = 0;
+    dragState = null;
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchcancel", function() {
+  _inPinch = false;
+  _pinchDist = 0;
+  if (dragState && dragState.type === "zoom") dragState = null;
+}, { passive: false });
+
+// ── Mouse wheel zoom ──
+
+canvas.addEventListener("wheel", function(e) {
+  if (!elementBounds.video) return;
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -30 : 30;
+  const newW = Math.max(40, (template.video.width || 1080) + delta);
+  template.video.width = newW;
+  const el = document.getElementById("val_video_width");
+  if (el) el.textContent = newW + "px";
+  schedulePreview();
+}, { passive: false });
+
+// ── RoundRect polyfill ──
+
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r) {
+    if (r>w/2) r=w/2; if (r>h/2) r=h/2;
+    this.moveTo(x+r,y); this.lineTo(x+w-r,y); this.quadraticCurveTo(x+w,y,x+w,y+r);
+    this.lineTo(x+w,y+h-r); this.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    this.lineTo(x+r,y+h); this.quadraticCurveTo(x,y+h,x,y+h-r);
+    this.lineTo(x,y+r); this.quadraticCurveTo(x,y,x+r,y);
+  };
+}
+
+// ── Actions ──
+
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(template,null,2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "template.json"; a.click();
+  URL.revokeObjectURL(blob);
+  showToast("Exported as JSON");
+}
+
+function resetToDefault() {
+  template = JSON.parse(JSON.stringify(TEMPLATE_DEFAULTS));
+  renderSection(currentSection);
+  schedulePreview();
+  showToast("Reset to defaults");
+}
+
+function loadJSON(str) {
+  try {
+    const data = JSON.parse(str);
+    for (const sec of ["hook","subtitle","video"]) {
+      if (data[sec]) { for (const [k,v] of Object.entries(data[sec])) {
+        if (TEMPLATE_DEFAULTS[sec] && k in TEMPLATE_DEFAULTS[sec]) template[sec][k] = v;
+      }}
+    }
+    if (data.shapes && Array.isArray(data.shapes)) {
+      template.shapes = data.shapes.map(s => ({...SHAPE_DEFAULTS, ...s}));
+    } else if (data.shape && data.shape.enabled) {
+      // Migrate legacy single-shape format
+      const { enabled, ...rest } = data.shape;
+      template.shapes = [{...SHAPE_DEFAULTS, ...rest}];
+    }
+    renderSection(currentSection);
+    schedulePreview();
+    showToast("Template loaded");
+  } catch(e) { showToast("Invalid JSON: "+e.message); }
+}
+
+function showToast(msg) { toastEl.textContent = msg; toastEl.classList.add("show"); clearTimeout(toastEl._t); toastEl._t = setTimeout(()=>toastEl.classList.remove("show"), 2500); }
+
+function switchSection(section) {
+  currentSection = section;
+  document.querySelectorAll(".section-tab").forEach(t => t.classList.toggle("active", t.dataset.section === section));
+  renderSection(section);
+}
+
+function sendToBot() {
+  if (!tg) return showToast('Only from Telegram Mini App');
+  tg.sendData(JSON.stringify({action:'save_template', template, user_id: window._tgUserId||null}));
+  tg.close();
+}
+
+// ── Init ──
+
+switchSection("hook");
+schedulePreview();
+
+document.getElementById("sectionTabs").addEventListener("click", e => {
+  const tab = e.target.closest(".section-tab");
+  if (tab) switchSection(tab.dataset.section);
+});
+
+window.addEventListener("resize", () => { clearTimeout(window._rt); window._rt = setTimeout(schedulePreview, 100); });
+window.loadJSON = loadJSON;
+
+const params = new URLSearchParams(window.location.search);
+const tplParam = params.get("template");
+if (tplParam) { try { loadJSON(atob(decodeURIComponent(tplParam))); } catch {} }
+</script>
+</body>
+</html>

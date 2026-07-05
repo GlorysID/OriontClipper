@@ -1,0 +1,25 @@
+[Unit]
+Description=ContentClipper video automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/contentclipper
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+EnvironmentFile=-/home/ubuntu/contentclipper/.env
+ExecStart=/home/ubuntu/contentclipper/.venv/bin/python /home/ubuntu/contentclipper/main.py
+Restart=on-failure
+RestartSec=10
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=3500M
+TimeoutStopSec=120
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

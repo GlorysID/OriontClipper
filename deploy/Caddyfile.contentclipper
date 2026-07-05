@@ -1,0 +1,18 @@
+:80 {
+	basic_auth {
+		admin $2a$14$x/kVHjVDZWsxRw3mKKV2UeiWulH5m4nObl7SYbb3HqxFK3ZF6StJW
+	}
+	reverse_proxy 127.0.0.1:3000
+}
+
+:20129 {
+	handle_path /hook-studio* {
+		reverse_proxy 127.0.0.1:8765
+	}
+	handle {
+		basic_auth {
+			admin $2a$14$x/kVHjVDZWsxRw3mKKV2UeiWulH5m4nObl7SYbb3HqxFK3ZF6StJW
+		}
+		reverse_proxy 172.17.0.1:20128
+	}
+}
