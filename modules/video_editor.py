@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import textwrap
@@ -33,7 +34,7 @@ DEFAULT_HOOK_TEMPLATE: dict[str, Any] = {
         "height": -2,
         "x": "(W-w)/2",
         "y": "(H-h)/2",
-        "background_blur": 20,
+        "background_blur": 25,
         "background_blur_power": 5,
         "border_w": 0,
         "border_color": "#ffffff@0.70",
@@ -52,24 +53,33 @@ DEFAULT_HOOK_TEMPLATE: dict[str, Any] = {
         "box": True,
         "box_color": "#101010@0.72",
         "box_border_w": 26,
+        "box_radius": 18,
+        "box_outline_w": 2,
+        "box_outline_color": "#ffffff@0.22",
+        "highlight_color": "#ffe600",
+        "highlight_last_word": False,
         "x": "(w-text_w)/2",
-        "y": "230",
+        "y": "220",
     },
     "subtitle": {
         "enabled": True,
-        "mode": "line",
+        "mode": "karaoke",
         "word_animation": "pop",
         "font_file": "",
-        "font_name": "DejaVu Sans Bold",
-        "font_size": 46,
-        "font_color": "#fff200",
+        "font_name": "Impact",
+        "font_size": 74,
+        "font_color": "#ffffff",
+        "highlight_color": "#ffe600",
         "outline_color": "#000000",
-        "outline": 2,
-        "shadow": 0,
+        "outline": 5.0,
+        "shadow": 2.5,
+        "shadow_color": "#000000",
         "border_style": 1,
-        "back_color": "#000000@0.0",
+        "back_color": "#000000@0.7",
         "alignment": 2,
-        "margin_v": 60,
+        "margin_v": 420,
+        "words_per_phrase": 4,
+        "text_transform": "upper",
     },
 }
 
@@ -135,6 +145,30 @@ def load_hook_template() -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise VideoEditError(f"Hook template must be a JSON object: {config.HOOK_TEMPLATE_PATH}")
     return merge_template(DEFAULT_HOOK_TEMPLATE, raw)
+
+
+def load_named_template(name_or_path: str) -> dict[str, Any]:
+    """Load a named template preset from hook_templates/ (e.g. 'capcut', 'hormozi') or path."""
+    name = str(name_or_path or "").strip().lower()
+    if not name:
+        return load_hook_template()
+
+    # Normalize name (strip .json if provided)
+    clean_name = name[:-5] if name.endswith(".json") else name
+    candidate_paths = [
+        config.PROJECT_ROOT / "hook_templates" / f"{clean_name}.json",
+        config.PROJECT_ROOT / name,
+        Path(name),
+    ]
+    for p in candidate_paths:
+        if p.exists() and p.is_file():
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    return merge_template(DEFAULT_HOOK_TEMPLATE, raw)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Could not read template %s: %s", p, exc)
+    return load_hook_template()
 
 
 def template_value(template: dict[str, Any], section: str, key: str) -> Any:
@@ -204,7 +238,31 @@ def css_color_to_ass(value: Any, default: str) -> str:
     return f"&H00{bb}{gg}{rr}&"
 
 
+def bundled_subtitle_font_selected(template: dict[str, Any]) -> bool:
+    """True when the bundled subtitle font should drive ASS rendering.
+
+    The bundled TTF (assets/fonts/) is prioritized on every platform, but an
+    explicit user font still wins: a non-empty subtitle.font_file, or a
+    subtitle.font_name that differs from the template default, disables it.
+    Falls back to DejaVu/Impact resolution when the bundled file is missing.
+    """
+    try:
+        bundled_path = Path(config.BUNDLED_SUBTITLE_FONT_PATH)
+    except AttributeError:
+        return False
+    if not bundled_path.exists():
+        return False
+    subtitle = template.get("subtitle", {})
+    if str(subtitle.get("font_file") or "").strip():
+        return False
+    name = str(subtitle.get("font_name") or "").strip()
+    default_name = str(DEFAULT_HOOK_TEMPLATE["subtitle"].get("font_name") or "").strip()
+    return not name or name == default_name
+
+
 def subtitle_font_name(template: dict[str, Any]) -> str:
+    if bundled_subtitle_font_selected(template):
+        return str(config.BUNDLED_SUBTITLE_FONT_NAME)
     subtitle = template.get("subtitle", {})
     explicit = str(subtitle.get("font_name") or "").strip()
     if explicit:
@@ -212,6 +270,12 @@ def subtitle_font_name(template: dict[str, Any]) -> str:
     font_file = str(subtitle.get("font_file") or "").strip()
     if font_file:
         return Path(font_file).stem
+    if os.name == "nt":
+        if Path(r"C:\Windows\Fonts\impact.ttf").exists():
+            return "Impact"
+        if Path(r"C:\Windows\Fonts\ariblk.ttf").exists():
+            return "Arial Black"
+        return "Arial"
     return config.SUBTITLE_FONT_NAME
 
 
@@ -226,6 +290,24 @@ def ass_timestamp(seconds: float) -> str:
 
 def ass_escape_text(value: str) -> str:
     return value.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
+
+
+def format_subtitle_line(text: str, max_line_chars: int = 26, text_transform: str = "upper") -> str:
+    cleaned = " ".join(text.strip().split())
+    if not cleaned:
+        return ""
+    if text_transform == "upper":
+        cleaned = cleaned.upper()
+    elif text_transform == "lower":
+        cleaned = cleaned.lower()
+    elif text_transform == "title":
+        cleaned = cleaned.title()
+
+    if len(cleaned) <= max_line_chars:
+        return ass_escape_text(cleaned)
+    lines = textwrap.wrap(cleaned, width=max_line_chars, break_long_words=False, break_on_hyphens=False)
+    escaped_lines = [ass_escape_text(l) for l in lines[:2]]
+    return r"\N".join(escaped_lines)
 
 
 def word_animation_tag(animation: str) -> str:
@@ -260,20 +342,63 @@ def segment_word_timings(segment: TranscriptSegment) -> list[tuple[float, float,
     return timings
 
 
+def write_line_ass(segments: Iterable[TranscriptSegment], ass_path: Path, template: dict[str, Any]) -> Path:
+    subtitle = template.get("subtitle", {})
+    font_name = subtitle_font_name(template)
+    font_size = int(float(subtitle.get("font_size", 64)))
+    primary = css_color_to_ass(subtitle.get("font_color"), "#ffffff")
+    outline_color = css_color_to_ass(subtitle.get("outline_color"), "#000000")
+    back_color = css_color_to_ass(subtitle.get("back_color"), "#000000")
+    outline = float(subtitle.get("outline", 5.0))
+    shadow = float(subtitle.get("shadow", 2.5))
+    alignment = int(float(subtitle.get("alignment", 2)))
+    margin_v = int(float(subtitle.get("margin_v", 300)))
+    border_style = int(float(subtitle.get("border_style", 1)))
+    transform = str(subtitle.get("text_transform", "upper")).lower()
+    max_chars = int(float(subtitle.get("max_line_chars", 26)))
+
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {config.TARGET_WIDTH}",
+        f"PlayResY: {config.TARGET_HEIGHT}",
+        "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Line,{font_name},{font_size},{primary},&H000000FF,{outline_color},{back_color},0,0,0,0,100,100,0,0,{border_style},{outline:g},{shadow:g},{alignment},80,80,{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for segment in segments:
+        if segment.end <= segment.start:
+            continue
+        text = format_subtitle_line(segment.text, max_line_chars=max_chars, text_transform=transform)
+        if text:
+            lines.append(f"Dialogue: 0,{ass_timestamp(segment.start)},{ass_timestamp(segment.end)},Line,,0,0,0,,{text}")
+
+    ass_path.parent.mkdir(parents=True, exist_ok=True)
+    ass_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return ass_path
+
+
 def write_word_ass(segments: Iterable[TranscriptSegment], ass_path: Path, template: dict[str, Any]) -> Path:
     subtitle = template.get("subtitle", {})
     font_name = subtitle_font_name(template)
-    font_size = int(float(subtitle.get("font_size", 52)))
-    primary = css_color_to_ass(subtitle.get("font_color"), "#fff200")
+    font_size = int(float(subtitle.get("font_size", 64)))
+    primary = css_color_to_ass(subtitle.get("font_color"), "#ffffff")
     outline_color = css_color_to_ass(subtitle.get("outline_color"), "#000000")
     back_color = css_color_to_ass(subtitle.get("back_color"), "#000000")
-    outline = float(subtitle.get("outline", 3))
-    shadow = float(subtitle.get("shadow", 0))
+    outline = float(subtitle.get("outline", 5.0))
+    shadow = float(subtitle.get("shadow", 2.5))
     alignment = int(float(subtitle.get("alignment", 2)))
-    margin_v = int(float(subtitle.get("margin_v", 64)))
+    margin_v = int(float(subtitle.get("margin_v", 300)))
     border_style = int(float(subtitle.get("border_style", 1)))
     animation = str(subtitle.get("word_animation", "pop"))
     tag = word_animation_tag(animation)
+    transform = str(subtitle.get("text_transform", "upper")).lower()
 
     lines = [
         "[Script Info]",
@@ -285,15 +410,128 @@ def write_word_ass(segments: Iterable[TranscriptSegment], ass_path: Path, templa
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Word,{font_name},{font_size},{primary},&H000000FF,{outline_color},{back_color},1,0,0,0,100,100,0,0,{border_style},{outline:g},{shadow:g},{alignment},80,80,{margin_v},1",
+        f"Style: Word,{font_name},{font_size},{primary},&H000000FF,{outline_color},{back_color},0,0,0,0,100,100,0,0,{border_style},{outline:g},{shadow:g},{alignment},80,80,{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for segment in segments:
         for start, end, word in segment_word_timings(segment):
+            if transform == "upper":
+                word = word.upper()
+            elif transform == "lower":
+                word = word.lower()
             text = f"{tag}{ass_escape_text(word)}"
             lines.append(f"Dialogue: 0,{ass_timestamp(start)},{ass_timestamp(end)},Word,,0,0,0,,{text}")
+
+    ass_path.parent.mkdir(parents=True, exist_ok=True)
+    ass_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return ass_path
+
+
+def write_karaoke_ass(
+    segments: Iterable[TranscriptSegment],
+    ass_path: Path,
+    template: dict[str, Any],
+) -> Path:
+    """Generate kinetic karaoke ASS subtitles (Alex Hormozi / CapCut style).
+
+    Displays 3-5 words per phrase with the active spoken word highlighted and scaled up
+    in bright gold/yellow, while inactive words remain solid white with black outline.
+    """
+    subtitle = template.get("subtitle", {})
+    font_name = subtitle_font_name(template)
+    font_size = int(float(subtitle.get("font_size", 74)))
+    primary_color = css_color_to_ass(subtitle.get("font_color"), "#ffffff")
+    highlight_ass = css_color_to_ass(subtitle.get("highlight_color"), "#ffe600")
+    outline_color = css_color_to_ass(subtitle.get("outline_color"), "#000000")
+    back_color = css_color_to_ass(subtitle.get("back_color"), "#000000")
+    outline = float(subtitle.get("outline", 5.0))
+    shadow = float(subtitle.get("shadow", 2.5))
+    alignment = int(float(subtitle.get("alignment", 2)))
+    margin_v = int(float(subtitle.get("margin_v", 420)))
+    border_style = int(float(subtitle.get("border_style", 1)))
+    transform = str(subtitle.get("text_transform", "upper")).lower()
+    words_per_phrase = max(1, int(float(subtitle.get("words_per_phrase", 4))))
+
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {config.TARGET_WIDTH}",
+        f"PlayResY: {config.TARGET_HEIGHT}",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Karaoke,{font_name},{font_size},{primary_color},&H000000FF,{outline_color},{back_color},1,0,0,0,100,100,0,0,{border_style},{outline:g},{shadow:g},{alignment},80,80,{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+
+    all_words: list[dict[str, Any]] = []
+    for segment in segments:
+        if segment.end <= segment.start:
+            continue
+        seg_words = getattr(segment, "words", None)
+        if seg_words and isinstance(seg_words, list):
+            for w in seg_words:
+                w_text = str(_get_attr_or_key(w, "word") or "").strip()
+                w_s = _as_float(_get_attr_or_key(w, "start"), segment.start)
+                w_e = _as_float(_get_attr_or_key(w, "end"), segment.end)
+                if w_text and w_e > w_s:
+                    all_words.append({"word": w_text, "start": w_s, "end": w_e})
+        else:
+            for w_s, w_e, w_text in segment_word_timings(segment):
+                if w_text.strip() and w_e > w_s:
+                    all_words.append({"word": w_text.strip(), "start": w_s, "end": w_e})
+
+    # Group into punchy phrases
+    phrases: list[list[dict[str, Any]]] = []
+    current_phrase: list[dict[str, Any]] = []
+    for w in all_words:
+        current_phrase.append(w)
+        has_punctuation = any(w["word"].endswith(p) for p in (".", "!", "?", ":", ";"))
+        if len(current_phrase) >= words_per_phrase or has_punctuation:
+            phrases.append(current_phrase)
+            current_phrase = []
+    if current_phrase:
+        phrases.append(current_phrase)
+
+    for phrase in phrases:
+        phrase_len = len(phrase)
+        for i, word_item in enumerate(phrase):
+            w_start = word_item["start"]
+            if i < phrase_len - 1:
+                w_end = max(w_start + 0.05, phrase[i + 1]["start"])
+            else:
+                w_end = word_item["end"]
+            if w_end <= w_start:
+                continue
+
+            phrase_parts: list[str] = []
+            for j, other_word in enumerate(phrase):
+                w_display = other_word["word"]
+                if transform == "upper":
+                    w_display = w_display.upper()
+                elif transform == "lower":
+                    w_display = w_display.lower()
+                elif transform == "title":
+                    w_display = w_display.title()
+                w_display = ass_escape_text(w_display)
+
+                if j == i:
+                    phrase_parts.append(
+                        f"{{\\c{highlight_ass}\\fscx114\\fscy114}}{w_display}{{\\fscx100\\fscy100\\c{primary_color}}}"
+                    )
+                else:
+                    phrase_parts.append(w_display)
+
+            dialogue_text = " ".join(phrase_parts)
+            lines.append(
+                f"Dialogue: 0,{ass_timestamp(w_start)},{ass_timestamp(w_end)},Karaoke,,0,0,0,,{dialogue_text}"
+            )
 
     ass_path.parent.mkdir(parents=True, exist_ok=True)
     ass_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -333,7 +571,10 @@ def build_base_video_chain(video_info: VideoInfo, template: dict[str, Any], targ
         f"crop={target_w}:{target_h}"
     )
     if blur > 0:
-        bg_filter += f",boxblur={blur}:{blur_power}"
+        bg_filter += (
+            f",boxblur={blur}:{blur_power}"
+            f",colorlevels=romin=0.04:gomin=0.04:bomin=0.04:romax=0.78:gomax=0.78:bomax=0.78"
+        )
     bg_filter += "[bg]"
 
     fg_filter = f"[0:v]scale={fg_width}:{fg_height}:force_original_aspect_ratio=decrease[fgraw]"
@@ -346,6 +587,40 @@ def build_base_video_chain(video_info: VideoInfo, template: dict[str, Any], targ
         fg_filter += ";[fgraw]null[fg]"
 
     return f"{bg_filter};{fg_filter};[bg][fg]overlay={overlay_x}:{overlay_y},setpts=PTS-STARTPTS[base]"
+
+
+def build_audio_filter_chain() -> str:
+    """Final audio filter chain for rendered clips.
+
+    loudnorm is intentionally the LAST stage: any future pre-filters (EQ,
+    denoise) must run before normalization so the loudness target holds.
+    """
+    stages: list[str] = []
+    loudnorm = str(getattr(config, "AUDIO_LOUDNORM_FILTER", "") or "").strip()
+    if loudnorm:
+        stages.append(loudnorm)
+    return ",".join(stages)
+
+
+def video_has_audio(video_path: Path) -> bool:
+    """True when the source contains at least one decodable audio stream."""
+    command = priority_command_prefix() + [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_type",
+        "-of",
+        "csv=p=0",
+        str(video_path),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return result.returncode == 0 and "audio" in (result.stdout or "")
 
 
 def probe_video(video_path: Path) -> VideoInfo:
@@ -391,10 +666,33 @@ def build_clip_segments(segments: Iterable[Any], clip_start: float, clip_end: fl
 
         relative_start = max(start, clip_start) - clip_start
         relative_end = min(end, clip_end) - clip_start
-        if relative_end > relative_start:
-            clip_segments.append(
-                TranscriptSegment(start=relative_start, end=relative_end, text=text.strip())
+        if relative_end <= relative_start:
+            continue
+
+        raw_words = _get_attr_or_key(segment, "words")
+        clip_words: list[dict[str, Any]] | None = None
+        if raw_words and isinstance(raw_words, list):
+            clip_words = []
+            for w in raw_words:
+                w_text = _get_attr_or_key(w, "word") or ""
+                w_s = _as_float(_get_attr_or_key(w, "start"), start)
+                w_e = _as_float(_get_attr_or_key(w, "end"), end)
+                if w_e <= clip_start or w_s >= clip_end:
+                    continue
+                clip_words.append({
+                    "word": str(w_text).strip(),
+                    "start": max(w_s, clip_start) - clip_start,
+                    "end": min(w_e, clip_end) - clip_start,
+                })
+
+        clip_segments.append(
+            TranscriptSegment(
+                start=relative_start,
+                end=relative_end,
+                text=text.strip(),
+                words=clip_words if clip_words else None,
             )
+        )
     return clip_segments
 
 
@@ -460,8 +758,8 @@ def build_filter_chain(
     video_info: VideoInfo,
     subtitle_path: Path,
     hook_overlay_path: Path | None,
-    badge_overlay_path: Path | None,
     template: dict[str, Any],
+    badge_overlay_path: Path | None = None,
 ) -> tuple[str, int]:
     """Build FFmpeg filter_complex string.
 
@@ -470,11 +768,24 @@ def build_filter_chain(
         where num_overlay_inputs is the count of additional -i inputs needed
         (0, 1, or 2 for badge and hook overlays).
     """
-    font_path = Path(config.SUBTITLE_FONT_PATH)
+    use_bundled_font = bundled_subtitle_font_selected(template)
+    if use_bundled_font:
+        font_path = Path(config.BUNDLED_SUBTITLE_FONT_PATH)
+    else:
+        font_path = Path(config.SUBTITLE_FONT_PATH)
     if not font_path.exists():
-        raise VideoEditError(
-            f"Configured font file does not exist: {font_path}. Install fonts-dejavu-core or set SUBTITLE_FONT_PATH."
-        )
+        if os.name == "nt":
+            impact_path = Path(r"C:\Windows\Fonts\impact.ttf")
+            if impact_path.exists():
+                font_path = impact_path
+            else:
+                win_arial = Path(r"C:\Windows\Fonts\arialbd.ttf")
+                if win_arial.exists():
+                    font_path = win_arial
+        if not font_path.exists():
+            raise VideoEditError(
+                f"Configured font file does not exist: {font_path}. Install fonts-dejavu-core or set SUBTITLE_FONT_PATH."
+            )
 
     target_w = config.TARGET_WIDTH
     target_h = config.TARGET_HEIGHT
@@ -484,15 +795,15 @@ def build_filter_chain(
     subtitle = template.get("subtitle", {})
     force_style = (
         f"FontName={subtitle_font_name(template)},"
-        f"FontSize={int(float(subtitle.get('font_size', 46)))},"
-        f"PrimaryColour={css_color_to_ass(subtitle.get('font_color'), '#fff200')},"
+        f"FontSize={int(float(subtitle.get('font_size', 64)))},"
+        f"PrimaryColour={css_color_to_ass(subtitle.get('font_color'), '#ffffff')},"
         f"OutlineColour={css_color_to_ass(subtitle.get('outline_color'), '#000000')},"
         f"BackColour={css_color_to_ass(subtitle.get('back_color'), '#000000')},"
         f"BorderStyle={int(float(subtitle.get('border_style', 1)))},"
-        f"Outline={float(subtitle.get('outline', 2)):g},"
-        f"Shadow={float(subtitle.get('shadow', 0)):g},"
+        f"Outline={float(subtitle.get('outline', 5.0)):g},"
+        f"Shadow={float(subtitle.get('shadow', 2.5)):g},"
         f"Alignment={int(float(subtitle.get('alignment', 2)))},"
-        f"MarginV={int(float(subtitle.get('margin_v', 60)))}"
+        f"MarginV={int(float(subtitle.get('margin_v', 300)))}"
     )
 
     base_chain = build_base_video_chain(video_info, template, target_w, target_h)
@@ -518,12 +829,25 @@ def build_filter_chain(
     filter_steps: list[str] = []
     current_label = "base"
 
-    # Subtitle (unchanged — uses ASS / SRT subtitles filter)
+    # Subtitle (always uses ASS with PlayResX/Y)
     if bool(template.get("subtitle", {}).get("enabled", True)):
+        fontsdir_opt = ""
+        if use_bundled_font:
+            # libass must scan the bundled dir or it silently falls back to a
+            # system font when "Montserrat ExtraBold" is not installed.
+            fdir = ffmpeg_filter_escape(str(font_path.parent.resolve()))
+            fontsdir_opt = f":fontsdir='{fdir}'"
+        elif os.name == "nt" and Path(r"C:\Windows\Fonts").is_dir():
+            fdir = ffmpeg_filter_escape(r"C:\Windows\Fonts")
+            fontsdir_opt = f":fontsdir='{fdir}'"
+        elif font_path.exists() and font_path.parent.is_dir():
+            fdir = ffmpeg_filter_escape(str(font_path.parent.resolve()))
+            fontsdir_opt = f":fontsdir='{fdir}'"
+
         if subtitle_path.suffix.lower() == ".ass":
-            filter_steps.append(f"[{current_label}]subtitles='{subtitle_value}'[subbed]")
+            filter_steps.append(f"[{current_label}]subtitles='{subtitle_value}'{fontsdir_opt}[subbed]")
         else:
-            filter_steps.append(f"[{current_label}]subtitles='{subtitle_value}':force_style='{force_style}'[subbed]")
+            filter_steps.append(f"[{current_label}]subtitles='{subtitle_value}':force_style='{force_style}'{fontsdir_opt}[subbed]")
         current_label = "subbed"
 
     # Badge overlay
@@ -590,16 +914,25 @@ class VideoEditor:
             hook_template = merge_template(DEFAULT_HOOK_TEMPLATE, user_template)
         else:
             hook_template = load_hook_template()
-        subtitle_mode = str(hook_template.get("subtitle", {}).get("mode", "line")).strip().lower()
-        if subtitle_mode == "word":
+        subtitle_mode = str(hook_template.get("subtitle", {}).get("mode", "karaoke")).strip().lower()
+        if subtitle_mode in ("karaoke", "kinetic", "hormozi"):
+            subtitle_path = write_karaoke_ass(
+                clip_segments,
+                work_dir / f"clip{clip_index}_karaoke.ass",
+                hook_template,
+            )
+        elif subtitle_mode == "word":
             subtitle_path = write_word_ass(
                 clip_segments,
                 work_dir / f"clip{clip_index}_words.ass",
                 hook_template,
             )
         else:
-            subtitle_path = work_dir / f"clip{clip_index}.srt"
-            write_srt(clip_segments, subtitle_path)
+            subtitle_path = write_line_ass(
+                clip_segments,
+                work_dir / f"clip{clip_index}_line.ass",
+                hook_template,
+            )
         hook_text_path = write_hook_textfile(
             hook, work_dir / f"clip{clip_index}_hook.txt", hook_template
         )
@@ -650,17 +983,32 @@ class VideoEditor:
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
+            str(config.X264_PRESET),
             "-crf",
-            "24",
+            str(config.X264_CRF),
+            "-maxrate",
+            str(config.X264_MAXRATE),
+            "-bufsize",
+            str(config.X264_BUFSIZE),
             "-c:a",
             "aac",
             "-movflags",
             "+faststart",
             "-threads",
-            str(config.FFMPEG_THREADS),
-            str(tmp_output),
+            str(config.X264_THREADS),
         ])
+
+        # Audio filters are only safe when the source actually has audio;
+        # -af on a stream-less mapping would abort the render.
+        audio_chain = build_audio_filter_chain()
+        if audio_chain:
+            if video_has_audio(video_path):
+                command.extend(["-af", audio_chain])
+            else:
+                self.logger.info(
+                    "Clip %s: source has no audio stream; skipping audio filters", clip_index
+                )
+        command.append(str(tmp_output))
 
         self.logger.info(
             "Rendering clip %s: %.2f-%.2fs -> %s", clip_index, start, end, final_path

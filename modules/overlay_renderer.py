@@ -14,7 +14,9 @@ Renders styled text as RGBA PNG overlays with full CSS-alike support:
 
 from __future__ import annotations
 
+import ast
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -91,52 +93,216 @@ def parse_css_color(value: Any) -> tuple[int, int, int, int]:
 # Expression evaluator for x / y
 # ---------------------------------------------------------------------------
 
+#: Callables allowed inside a position expression.
+_ALLOWED_FUNCS: dict[str, Any] = {"min": min, "max": max, "abs": abs}
+_MAX_CALL_ARGS = 4
+#: Guard against DoS via ``2**999999`` style payloads (values may come from users).
+_MAX_POW_EXPONENT = 10
+_MAX_POW_BASE_ABS = 1_000_000.0
+
+
+def _num(value: Any, raw: str, what: str) -> Any:
+    """Return ``value`` if it is a real number, else raise a clear ValueError."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"Invalid position expression {raw!r}: {what} must be a number, got {type(value).__name__}"
+        )
+    return value
+
+
+def _eval_ast_node(node: ast.AST, env: dict[str, int], raw: str) -> Any:
+    """Recursively evaluate a whitelisted arithmetic AST node."""
+    if isinstance(node, ast.Expression):
+        return _eval_ast_node(node.body, env, raw)
+
+    if isinstance(node, ast.Constant):
+        return _num(node.value, raw, "constant")
+
+    if isinstance(node, ast.Name):
+        if node.id.startswith("__") or node.id not in env:
+            raise ValueError(
+                f"Invalid position expression {raw!r}: unknown variable {node.id!r} "
+                f"(allowed: {', '.join(sorted(env))})"
+            )
+        return env[node.id]
+
+    if isinstance(node, ast.BinOp):
+        left = _eval_ast_node(node.left, env, raw)
+        right = _eval_ast_node(node.right, env, raw)
+        op = node.op
+        if isinstance(op, ast.Add):
+            return left + right
+        if isinstance(op, ast.Sub):
+            return left - right
+        if isinstance(op, ast.Mult):
+            return left * right
+        if isinstance(op, ast.Div):
+            return left / right
+        if isinstance(op, ast.FloorDiv):
+            return left // right
+        if isinstance(op, ast.Mod):
+            return left % right
+        if isinstance(op, ast.Pow):
+            if abs(right) > _MAX_POW_EXPONENT:
+                raise ValueError(
+                    f"Invalid position expression {raw!r}: exponent {right!r} out of range "
+                    f"(|exp| must be <= {_MAX_POW_EXPONENT})"
+                )
+            if abs(left) > _MAX_POW_BASE_ABS:
+                raise ValueError(
+                    f"Invalid position expression {raw!r}: base {left!r} out of range "
+                    f"(|base| must be <= {_MAX_POW_BASE_ABS:g})"
+                )
+            return left ** right
+        raise ValueError(
+            f"Invalid position expression {raw!r}: unsupported operator "
+            f"{type(op).__name__.lower()}"
+        )
+
+    if isinstance(node, ast.UnaryOp):
+        operand = _eval_ast_node(node.operand, env, raw)
+        if isinstance(node.op, ast.UAdd):
+            return +operand
+        if isinstance(node.op, ast.USub):
+            return -operand
+        raise ValueError(
+            f"Invalid position expression {raw!r}: unsupported unary operator "
+            f"{type(node.op).__name__.lower()}"
+        )
+
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) or node.func.id not in _ALLOWED_FUNCS:
+            raise ValueError(
+                f"Invalid position expression {raw!r}: only {', '.join(sorted(_ALLOWED_FUNCS))} "
+                "calls are allowed"
+            )
+        if node.keywords:
+            raise ValueError(
+                f"Invalid position expression {raw!r}: keyword arguments are not allowed"
+            )
+        if len(node.args) > _MAX_CALL_ARGS:
+            raise ValueError(
+                f"Invalid position expression {raw!r}: {node.func.id}() accepts at most "
+                f"{_MAX_CALL_ARGS} arguments"
+            )
+        args = [_num(_eval_ast_node(a, env, raw), raw, "argument") for a in node.args]
+        return _num(_ALLOWED_FUNCS[node.func.id](*args), raw, f"{node.func.id}() result")
+
+    raise ValueError(
+        f"Invalid position expression {raw!r}: {type(node).__name__} is not allowed"
+    )
+
+
+def safe_eval_expr(expr: str, env: dict[str, int]) -> Any:
+    """Evaluate an arithmetic position expression without ``eval``.
+
+    Raises ValueError for anything outside the whitelist (attributes, subscripts,
+    comprehensions, lambdas, unknown/builtin names, oversized powers, ...).
+    """
+    raw = str(expr)
+    try:
+        tree = ast.parse(raw.strip(), mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"Invalid position expression {raw!r}: {exc.msg}") from None
+    return _num(_eval_ast_node(tree, env, raw), raw, "result")
+
+
+def _default_position(text_w: int, canvas_w: int, axis: str) -> int:
+    return (canvas_w - text_w) // 2 if axis == "x" else 0
+
+
 def evaluate_expr(
     expr: Any,
     text_w: int,
     text_h: int,
     canvas_w: int = CANVAS_W,
     canvas_h: int = CANVAS_H,
+    axis: str = "y",
 ) -> int:
     """Evaluate a position expression.
 
-    Supports variables: w (canvas_w), h (canvas_h), text_w, text_h,
-    plus simple arithmetic via Python eval on trusted template input.
+    Supports variables: w (canvas_w), h (canvas_h), W (canvas_w), H (canvas_h),
+    text_w, text_h, plus arithmetic (add/sub/mul/div/floordiv/mod/pow), unary
+    +/- and min()/max()/abs() calls.
+
+    Expressions may originate from user input (e.g. ``/setpos``), so they are
+    evaluated through a whitelisted AST walker instead of ``eval``.
     """
     if expr is None:
-        return 0
+        return _default_position(text_w, canvas_w, axis)
     raw = str(expr).strip()
     if not raw:
-        return 0
+        return _default_position(text_w, canvas_w, axis)
+
+    lower_raw = raw.lower()
+    if axis == "x":
+        named_positions_x = {
+            "center": max(0, (canvas_w - text_w) // 2),
+            "tengah": max(0, (canvas_w - text_w) // 2),
+            "middle": max(0, (canvas_w - text_w) // 2),
+            "left": 40,
+            "kiri": 40,
+            "right": max(0, canvas_w - text_w - 40),
+            "kanan": max(0, canvas_w - text_w - 40),
+        }
+        if lower_raw in named_positions_x:
+            return named_positions_x[lower_raw]
+    else:
+        named_positions_y = {
+            "top": 220,
+            "atas": 220,
+            "upper_center": 360,
+            "tengah_atas": 360,
+            "center_top": 360,
+            "center": max(0, (canvas_h - text_h) // 2),
+            "tengah": max(0, (canvas_h - text_h) // 2),
+            "middle": max(0, (canvas_h - text_h) // 2),
+            "lower": 1260,
+            "bawah": 1260,
+            "bottom": 1260,
+        }
+        if lower_raw in named_positions_y:
+            return named_positions_y[lower_raw]
 
     # Plain numeric
     try:
         return int(round(float(raw)))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # OverflowError keeps non-finite input ("inf", "1e400") from escaping.
         pass
 
-    # Replace variables
-    ns = {
-        "w": canvas_w,
-        "h": canvas_h,
-        "W": canvas_w,
-        "H": canvas_h,
+    # Variable mapping: handle both (w-text_w)/2 and FFmpeg (W-w)/2
+    has_cap_w = "W" in raw
+    has_low_w = "w" in raw
+    has_cap_h = "H" in raw
+    has_low_h = "h" in raw
+
+    ns: dict[str, int] = {
         "text_w": text_w,
         "text_h": text_h,
     }
-    # Simple token replacement (avoid issues with partial matches)
-    tokens = re.findall(r"\b(w|h|W|H|text_w|text_h)\b", raw)
-    safe = raw
-    for token in sorted(set(tokens), key=len, reverse=True):
-        safe = safe.replace(token, str(ns[token]))
+    if has_cap_w and has_low_w:
+        ns["W"] = canvas_w
+        ns["w"] = text_w
+    else:
+        ns["w"] = canvas_w
+        ns["W"] = canvas_w
 
-    # Evaluate — these expressions come from our own template, not user input
+    if has_cap_h and has_low_h:
+        ns["H"] = canvas_h
+        ns["h"] = text_h
+    else:
+        ns["h"] = canvas_h
+        ns["H"] = canvas_h
+
+    # Evaluate with a whitelisted AST walker — position values can be supplied
+    # by users (e.g. /setpos), so eval() must never be used here.
     try:
-        result = eval(safe, {"__builtins__": {}}, {"min": min, "max": max, "abs": abs})
+        result = safe_eval_expr(raw, ns)
         return int(round(float(result)))
-    except (SyntaxError, NameError, TypeError, ValueError, ZeroDivisionError):
-        LOGGER.warning("Could not evaluate position expression: %r", raw)
-        return 0
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError) as exc:
+        LOGGER.warning("Could not evaluate position expression: %r (%s)", raw, exc)
+        return _default_position(text_w, canvas_w, axis)
 
 
 # ---------------------------------------------------------------------------
@@ -248,14 +414,19 @@ def draw_rounded_rect(
     xy: tuple[float, float, float, float],
     radius: int,
     fill: tuple[int, int, int, int] | tuple[int, int, int] | None = None,
+    outline: tuple[int, int, int, int] | tuple[int, int, int] | None = None,
+    width: int = 0,
 ) -> None:
-    """Draw a filled rounded rectangle using arcs and rectangles.
-
-    Works on Pillow 8+ (including 12.x which is installed).
-    """
+    """Draw a filled rounded rectangle with optional outline using arcs and rectangles or built-in."""
     x1, y1, x2, y2 = map(int, xy)
-    # Clamp radius
     r = max(0, min(radius, (x2 - x1) // 2, (y2 - y1) // 2))
+    if hasattr(draw, "rounded_rectangle"):
+        if outline is not None and width > 0:
+            draw.rounded_rectangle((x1, y1, x2, y2), radius=r, fill=fill, outline=outline, width=width)
+        else:
+            draw.rounded_rectangle((x1, y1, x2, y2), radius=r, fill=fill)
+        return
+
     if r == 0:
         draw.rectangle((x1, y1, x2, y2), fill=fill)
         return
@@ -297,16 +468,29 @@ def load_font(font_path: str | None, font_size: int) -> ImageFont.FreeTypeFont |
 
 def _char_width(font: ImageFont.FreeTypeFont, char: str) -> int:
     """Return the advance width of a single character."""
+    try:
+        adv = font.getlength(char)
+        if adv > 0:
+            return int(round(adv))
+    except Exception:
+        pass
     bbox = font.getbbox(char)
-    return bbox[2] - bbox[0]
+    if bbox:
+        return max(1, bbox[2] - bbox[0])
+    return int(round(font.size * 0.3))
 
 
 def _text_line_width(font: ImageFont.FreeTypeFont, text: str, tracking: int) -> int:
     """Measure the total width of a line of text with letter-spacing."""
     if not text:
         return 0
+    if tracking == 0:
+        try:
+            return int(round(font.getlength(text)))
+        except Exception:
+            pass
     total = sum(_char_width(font, ch) for ch in text)
-    if len(text) > 1:
+    if len(text) > 1 and tracking != 0:
         total += tracking * (len(text) - 1)
     return total
 
@@ -397,6 +581,43 @@ def _str_val(section: dict[str, Any], key: str, default: str = "") -> str:
     return str(val).strip() if val is not None else default
 
 
+def parse_hook_tokens(line: str, highlight_last_if_none: bool = False) -> list[tuple[str, bool]]:
+    """Parse a line into [(token_text, is_highlighted), ...].
+
+    Supports *WORD* or [WORD] syntax for explicit keyword emphasis.
+    If no markup is found and highlight_last_if_none is True, the last word is highlighted.
+    """
+    has_markup = bool(re.search(r"(\*[^*]+\*|\[[^\]]+\])", line))
+    if has_markup:
+        parts = re.split(r"(\*[^*]+\*|\[[^\]]+\])", line)
+        tokens: list[tuple[str, bool]] = []
+        for p in parts:
+            if not p:
+                continue
+            if (p.startswith("*") and p.endswith("*")) or (p.startswith("[") and p.endswith("]")):
+                clean = p[1:-1]
+                if clean:
+                    tokens.append((clean, True))
+            else:
+                tokens.append((p, False))
+        return tokens
+
+    if highlight_last_if_none:
+        words = line.split(" ")
+        if len(words) > 1:
+            res: list[tuple[str, bool]] = []
+            for i, w in enumerate(words):
+                if i > 0:
+                    res.append((" ", False))
+                if i == len(words) - 1:
+                    res.append((w, True))
+                else:
+                    res.append((w, False))
+            return res
+
+    return [(line, False)]
+
+
 def render_text_layer(
     text: str,
     section: dict[str, Any],
@@ -418,6 +639,8 @@ def render_text_layer(
     # -- Parse section config --------------------------------------------------
     font_size = _int_val(section, "font_size", 70)
     font_color = parse_css_color(_str_val(section, "font_color", "#ffffff"))
+    highlight_color = parse_css_color(_str_val(section, "highlight_color", "#ffe600"))
+    highlight_last = _bool_val(section, "highlight_last_word", False)
     border_w = _int_val(section, "border_w", 0)
     border_color = parse_css_color(_str_val(section, "border_color", "#000000"))
     shadow_x = _int_val(section, "shadow_x", 0)
@@ -427,6 +650,8 @@ def render_text_layer(
     box_color = parse_css_color(_str_val(section, "box_color", "#000000"))
     box_border_w = _int_val(section, "box_border_w", 0)
     box_radius = _int_val(section, "box_radius", 0)
+    box_outline_w = _int_val(section, "box_outline_w", 0)
+    box_outline_color = parse_css_color(_str_val(section, "box_outline_color", "#00000000"))
     tracking = _int_val(section, "letter_spacing", 0)
     line_spacing = _int_val(section, "line_spacing", 0)
     rotate = _float_val(section, "rotate", 0.0)
@@ -434,6 +659,8 @@ def render_text_layer(
     box_clip = parse_css_polygon(section.get("box_clip"), canvas_w, canvas_h)
 
     # -- Load font -------------------------------------------------------------
+    if not font_path:
+        font_path = _resolve_font_path(section, "hook")
     font = load_font(font_path, font_size)
     if font is None:
         # Fallback: draw error text
@@ -442,25 +669,44 @@ def render_text_layer(
         draw.text((20, canvas_h // 2), f"[font error: {font_path}]", fill=(255, 0, 0, 255))
         return img
 
-    # -- Prepare lines ---------------------------------------------------------
-    lines = text.split("\n") if text else [""]
-    lines = [ln for ln in lines if ln is not None]
+    # -- Prepare lines and tokens ----------------------------------------------
+    raw_lines = text.split("\n") if text else [""]
+    raw_lines = [ln for ln in raw_lines if ln is not None]
 
-    if not lines or not any(ln.strip() for ln in lines):
+    if not raw_lines or not any(ln.strip() for ln in raw_lines):
         # No text: return empty transparent canvas
         return Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+
+    parsed_lines = [parse_hook_tokens(ln, highlight_last_if_none=highlight_last) for ln in raw_lines]
+    clean_lines = ["".join(t[0] for t in tokens) for tokens in parsed_lines]
 
     # -- Measure text block ----------------------------------------------------
     ascent, descent = font.getmetrics()
     line_h = ascent + descent + line_spacing
-    text_w, text_h = _text_block_size(font, lines, tracking, line_spacing)
+    text_w, text_h = _text_block_size(font, clean_lines, tracking, line_spacing)
 
     if text_w <= 0 or text_h <= 0:
         return Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
 
     # -- Auto-fit: reduce font size if text exceeds available width ------------
-    x_val_pre = evaluate_expr(section.get("x"), 0, 0, canvas_w, canvas_h)
-    available_w = canvas_w - x_val_pre - 40
+    x_expr = section.get("x")
+    pad = box_border_w if box_enabled else 0
+    safe_margin = 50
+
+    is_x_centered = (
+        x_expr is None
+        or str(x_expr).strip().lower() in {
+            "center", "tengah", "middle",
+            "(w-text_w)/2", "(w-w)/2", "(w - text_w)/2", "(w - w)/2",
+            "(w-text_w)/2.0", "(w-w)/2.0",
+        }
+    )
+    if is_x_centered:
+        available_w = max(200, canvas_w - 2 * safe_margin - 2 * pad)
+    else:
+        x_val_pre = evaluate_expr(x_expr, 0, 0, canvas_w, canvas_h, axis="x")
+        available_w = max(200, canvas_w - x_val_pre - safe_margin - 2 * pad)
+
     min_font = 24
     while text_w > available_w and font_size > min_font:
         font_size -= 2
@@ -469,7 +715,7 @@ def render_text_layer(
             break
         ascent, descent = font.getmetrics()
         line_h = ascent + descent + line_spacing
-        text_w, text_h = _text_block_size(font, lines, tracking, line_spacing)
+        text_w, text_h = _text_block_size(font, clean_lines, tracking, line_spacing)
 
     # -- Calculate layer dimensions --------------------------------------------
     pad = box_border_w if box_enabled else 0
@@ -489,8 +735,8 @@ def render_text_layer(
 
     # Allow room for shadow + stroke + rotation
     extra = max(
-        abs(shadow_ox) + shadow_blur + shadow_spread + abs(shadow_x) + border_w,
-        abs(shadow_oy) + shadow_blur + shadow_spread + abs(shadow_y) + border_w,
+        abs(shadow_ox) + shadow_blur + shadow_spread + abs(shadow_x) + border_w + box_outline_w,
+        abs(shadow_oy) + shadow_blur + shadow_spread + abs(shadow_y) + border_w + box_outline_w,
         0,
     )
     buffer = extra + 20  # safety margin
@@ -511,13 +757,11 @@ def render_text_layer(
         by1 = oy - pad
         bx2 = ox + text_w + pad
         by2 = oy + text_h + pad
-        # Expand by spread
         sp_adjust = shadow_spread
         sx1 = bx1 - sp_adjust + shadow_ox
         sy1 = by1 - sp_adjust + shadow_oy
         sx2 = bx2 + sp_adjust + shadow_ox
         sy2 = by2 + sp_adjust + shadow_oy
-        # Create shadow mask on separate image
         shadow_layer = Image.new("RGBA", (content_w, content_h), (0, 0, 0, 0))
         sd = ImageDraw.Draw(shadow_layer)
         shadow_radius = max(0, box_radius + sp_adjust)
@@ -535,11 +779,13 @@ def render_text_layer(
         by2 = oy + text_h + pad
 
         if box_clip:
-            # Clip-path: create a mask and apply
             box_img = Image.new("RGBA", (content_w, content_h), (0, 0, 0, 0))
             bd = ImageDraw.Draw(box_img)
-            draw_rounded_rect(bd, (bx1, by1, bx2, by2), box_radius, fill=box_color)
-            # Create polygon clip mask
+            draw_rounded_rect(
+                bd, (bx1, by1, bx2, by2), box_radius, fill=box_color,
+                outline=box_outline_color if box_outline_w > 0 else None,
+                width=box_outline_w
+            )
             mask_img = Image.new("L", (content_w, content_h), 0)
             md = ImageDraw.Draw(mask_img)
             md.polygon(box_clip, fill=255)
@@ -552,56 +798,64 @@ def render_text_layer(
             )
             content = Image.alpha_composite(content, box_img)
         else:
-            draw_rounded_rect(draw, (bx1, by1, bx2, by2), box_radius, fill=box_color)
+            draw_rounded_rect(
+                draw, (bx1, by1, bx2, by2), box_radius, fill=box_color,
+                outline=box_outline_color if box_outline_w > 0 else None,
+                width=box_outline_w
+            )
 
     # -- 3. Text shadow (drawtext-style) ---------------------------------------
     if shadow_x != 0 or shadow_y != 0:
-        # Text shadow offset
-        for i, ln in enumerate(lines):
+        for i, (tokens, cln) in enumerate(zip(parsed_lines, clean_lines)):
             line_y = oy + i * line_h
-            line_w = _text_line_width(font, ln, tracking)
-            # Center the line within the text block width
+            line_w = _text_line_width(font, cln, tracking)
             line_x = ox + (text_w - line_w) // 2
-            _draw_line_with_tracking(
-                draw,
-                line_x + shadow_x,
-                line_y + shadow_y,
-                ln,
-                font,
-                fill=shadow_color,
-                tracking=tracking,
-                stroke_width=0,
-            )
+            cx = line_x + shadow_x
+            cy = line_y + shadow_y
+            for t_text, _ in tokens:
+                if tracking == 0:
+                    draw.text((cx, cy), t_text, fill=shadow_color, font=font)
+                    cx += int(round(font.getlength(t_text)))
+                else:
+                    for ch in t_text:
+                        cw = _char_width(font, ch)
+                        draw.text((cx, cy), ch, fill=shadow_color, font=font)
+                        cx += cw + tracking
 
-    # -- 4. Text stroke + fill -------------------------------------------------
-    for i, ln in enumerate(lines):
+    # -- 4. Text stroke + fill with keyword highlighting ----------------------
+    for i, (tokens, cln) in enumerate(zip(parsed_lines, clean_lines)):
         line_y = oy + i * line_h
-        line_w = _text_line_width(font, ln, tracking)
+        line_w = _text_line_width(font, cln, tracking)
         line_x = ox + (text_w - line_w) // 2
-
-        # Draw with stroke (Pillow stroke is an outline around the glyph)
-        if border_w > 0:
-            _draw_line_with_tracking(
-                draw,
-                line_x,
-                line_y,
-                ln,
-                font,
-                fill=font_color,
-                tracking=tracking,
-                stroke_width=border_w,
-                stroke_fill=border_color,
-            )
-        else:
-            _draw_line_with_tracking(
-                draw,
-                line_x,
-                line_y,
-                ln,
-                font,
-                fill=font_color,
-                tracking=tracking,
-            )
+        cx = line_x
+        for t_text, is_hl in tokens:
+            t_fill = highlight_color if is_hl else font_color
+            if tracking == 0:
+                if border_w > 0:
+                    draw.text(
+                        (cx, line_y), t_text,
+                        fill=t_fill,
+                        font=font,
+                        stroke_width=border_w,
+                        stroke_fill=border_color,
+                    )
+                else:
+                    draw.text((cx, line_y), t_text, fill=t_fill, font=font)
+                cx += int(round(font.getlength(t_text)))
+            else:
+                for ch in t_text:
+                    cw = _char_width(font, ch)
+                    if border_w > 0:
+                        draw.text(
+                            (cx, line_y), ch,
+                            fill=t_fill,
+                            font=font,
+                            stroke_width=border_w,
+                            stroke_fill=border_color,
+                        )
+                    else:
+                        draw.text((cx, line_y), ch, fill=t_fill, font=font)
+                    cx += cw + tracking
 
     # -- 5. Rotation -----------------------------------------------------------
     if rotate != 0.0:
@@ -616,27 +870,38 @@ def render_text_layer(
     # -- 6. Position on final canvas -------------------------------------------
     final = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
 
-    # Evaluate X / Y using expressions
-    x_val = evaluate_expr(section.get("x"), content.width, content.height, canvas_w, canvas_h)
-    y_val = evaluate_expr(section.get("y"), content.width, content.height, canvas_w, canvas_h)
+    # Calculate exact placement for the visible element (layer_w, layer_h)
+    x_expr = section.get("x")
+    y_expr = section.get("y")
 
-    # For expressions like "(w-text_w)/2", the content width already includes
-    # the buffer. But the user's template has expressions designed for drawtext
-    # where text_w is the actual text width, not the padded content.
-    # So the x/y are the position of the text element (not the content).
-    # We adjust so the text aligns at the evaluated position.
+    # Horizontal positioning: center content based on canvas and visual element
+    if is_x_centered:
+        target_center_x = canvas_w / 2.0
+    else:
+        target_elem_x = evaluate_expr(x_expr, layer_w, layer_h, canvas_w, canvas_h, axis="x")
+        target_center_x = target_elem_x + layer_w / 2.0
 
-    # Compute where the text is within the content
-    # The text starts at ox in content coords
-    # The content is then positioned so that ox lands at (x_val, y_val) on the canvas
-    paste_x = x_val - ox
-    paste_y = y_val - oy
+    paste_x = int(round(target_center_x - content.width / 2.0))
 
-    # Clamp to prevent content from overflowing canvas edges
-    if paste_x + content.width > canvas_w:
-        paste_x = max(0, canvas_w - content.width)
-    if paste_y + content.height > canvas_h:
-        paste_y = max(0, canvas_h - content.height)
+    # Vertical positioning: align visual element top at target_elem_y
+    target_elem_y = evaluate_expr(y_expr, layer_w, layer_h, canvas_w, canvas_h, axis="y")
+    target_center_y = target_elem_y + layer_h / 2.0
+    paste_y = int(round(target_center_y - content.height / 2.0))
+
+    # Gentle clamping: prevent visible element from clipping off edges
+    vis_x1 = paste_x + (content.width - layer_w) // 2
+    vis_x2 = vis_x1 + layer_w
+    if vis_x1 < 10:
+        paste_x += (10 - vis_x1)
+    elif vis_x2 > canvas_w - 10:
+        paste_x -= (vis_x2 - (canvas_w - 10))
+
+    vis_y1 = paste_y + (content.height - layer_h) // 2
+    vis_y2 = vis_y1 + layer_h
+    if vis_y1 < 10:
+        paste_y += (10 - vis_y1)
+    elif vis_y2 > canvas_h - 10:
+        paste_y -= (vis_y2 - (canvas_h - 10))
 
     final.paste(content, (paste_x, paste_y), content)
     return final
@@ -716,6 +981,37 @@ def render_badge(
     return out_path
 
 
+def _bundled_hook_font_selected(section: dict[str, Any]) -> bool:
+    """True when the bundled subtitle TTF should drive this layer's text.
+
+    Mirrors VideoEditor.bundled_subtitle_font_selected(): the bundled
+    assets/fonts TTF wins on every platform, but an explicit font choice in
+    the template (font_file, or a font_name that differs from the shipped
+    default) still takes priority.
+    """
+    try:
+        import config as cfg  # noqa: F811
+
+        bundled = Path(cfg.BUNDLED_SUBTITLE_FONT_PATH)
+    except Exception:
+        return False
+    if not bundled.exists():
+        return False
+    if _str_val(section, "font_file"):
+        return False
+    name = _str_val(section, "font_name").strip()
+    if not name:
+        return True
+    default_name = "Impact"
+    try:
+        from modules.video_editor import DEFAULT_HOOK_TEMPLATE
+
+        default_name = str(DEFAULT_HOOK_TEMPLATE["hook"].get("font_name", default_name))
+    except Exception:
+        pass
+    return name == default_name
+
+
 def _resolve_font_path(
     section: dict[str, Any],
     section_name: str = "hook",
@@ -724,7 +1020,8 @@ def _resolve_font_path(
 
     Tries in order:
     1. The explicit ``font_file`` in the section.
-    2. The project-level ``SUBTITLE_FONT_PATH`` config.
+    2. The bundled subtitle font (assets/fonts) when no font is configured.
+    3. The project-level ``SUBTITLE_FONT_PATH`` config.
     """
     font_file = _str_val(section, "font_file")
     if font_file:
@@ -737,6 +1034,11 @@ def _resolve_font_path(
             return str(path.resolve())
         LOGGER.warning("Configured font file not found: %s", path)
 
+    if _bundled_hook_font_selected(section):
+        import config as cfg  # noqa: F811
+
+        return str(Path(cfg.BUNDLED_SUBTITLE_FONT_PATH).resolve())
+
     # Fall back to subtitle font from config
     try:
         import config as cfg  # noqa: F811
@@ -744,6 +1046,10 @@ def _resolve_font_path(
         fallback = str(Path(cfg.SUBTITLE_FONT_PATH).resolve())
         if Path(fallback).exists():
             return fallback
+        if os.name == "nt":
+            win_arial = Path(r"C:\Windows\Fonts\arialbd.ttf")
+            if win_arial.exists():
+                return str(win_arial.resolve())
     except Exception:
         pass
 

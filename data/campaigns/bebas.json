@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "id": "bebas",
+  "name": "Bebas (tanpa aturan campaign)",
+  "strictness": "loose",
+  "profile_version": 1,
+  "source_doc": null,
+  "clip_rules": {
+    "duration_s": null,
+    "banned_exact": [],
+    "banned_topics": []
+  },
+  "post_rules": {
+    "caption_required": null,
+    "platforms": {}
+  },
+  "account_items": [],
+  "out_of_control": []
+}
