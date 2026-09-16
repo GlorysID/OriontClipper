@@ -2477,6 +2477,14 @@ PRESET_NAMES: dict[str, str] = {
     "neon_badge": "Cyber Neon (Cyan Glow)",
 }
 
+PRESET_DEFAULTS: dict[str, dict[str, str]] = {
+    "hormozi": {"highlight_color": "#ffe600", "position": "upper_center"},
+    "capcut": {"highlight_color": "#00ff66", "position": "upper_center"},
+    "cinematic": {"highlight_color": "#f5c518", "position": "top"},
+    "minimal": {"highlight_color": "#ffffff", "position": "top"},
+    "neon_badge": {"highlight_color": "#00e5ff", "position": "upper_center"},
+}
+
 POSITION_NAMES: dict[str, str] = {
     "top": "Atas (Top)",
     "upper_center": "Tengah-Atas (Upper Center)",
@@ -2494,18 +2502,14 @@ COLOR_NAMES: dict[str, str] = {
 
 
 def get_user_style(context: ContextTypes.DEFAULT_TYPE) -> dict[str, str]:
-    default_style = {
-        "preset": "hormozi",
-        "position": "upper_center",
-        "highlight_color": "#ffe600",
-    }
     user_style = context.user_data.get("hook_style")
     if not isinstance(user_style, dict):
-        user_style = dict(default_style)
+        user_style = {
+            "preset": "hormozi",
+            "position": "upper_center",
+            "highlight_color": "#ffe600",
+        }
         context.user_data["hook_style"] = user_style
-    else:
-        for k, v in default_style.items():
-            user_style.setdefault(k, v)
     return user_style
 
 
@@ -2513,19 +2517,28 @@ def get_user_hook_template(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]
     style = get_user_style(context)
     preset_name = style.get("preset", "hormozi")
     template = load_named_template(preset_name)
-    pos = style.get("position", "upper_center")
-    color = style.get("highlight_color", "#ffe600")
+    preset_def = PRESET_DEFAULTS.get(preset_name, {})
+
+    pos = style.get("position") or preset_def.get("position", template.get("hook", {}).get("position", "upper_center"))
+    color = style.get("highlight_color") or preset_def.get("highlight_color", template.get("hook", {}).get("highlight_color", "#ffe600"))
 
     if "hook" in template and isinstance(template["hook"], dict):
         template["hook"]["position"] = pos
         template["hook"]["y"] = pos
         template["hook"]["highlight_color"] = color
         template["hook"]["highlight_last_word"] = True  # Ensure hook always displays the chosen highlight color
-        if template["hook"].get("box_outline_color"):
-            template["hook"]["box_outline_color"] = f"{color}@0.65"
+        # Outline tulisan hitam tipis
+        template["hook"]["border_w"] = 2
+        template["hook"]["border_color"] = "#000000@0.95"
+        if template["hook"].get("box") and template["hook"].get("box_outline_w", 0) > 0 and color:
+            template["hook"]["box_outline_color"] = f"{color}@0.75"
 
     if "subtitle" in template and isinstance(template["subtitle"], dict):
         template["subtitle"]["highlight_color"] = color
+        # Outline subtitel hitam tipis
+        template["subtitle"]["outline"] = 1.8
+        template["subtitle"]["outline_color"] = "#000000"
+        template["subtitle"]["shadow"] = 1.2
         if pos == "lower":
             template["subtitle"]["margin_v"] = 280
         elif pos in ("top", "upper_center"):
@@ -2543,11 +2556,33 @@ def render_sample_hook_preview(template: dict[str, Any], text: str, out_path: Pa
     if "\n" not in text:
         text = prepare_hook_text(text, hook_sec if "max_line_chars" in hook_sec else template)
 
-    bg = Image.new("RGB", (1080, 1920), (18, 21, 28))
+    bg = Image.new("RGBA", (1080, 1920), (14, 17, 24, 255))
     layer = render_text_layer(text, hook_sec, 1080, 1920)
     bg.paste(layer, (0, 0), layer)
+
+    # Tambahkan baris contoh subtitel karaoke agar user melihat preview visual lengkap
+    sub_sec = template.get("subtitle", {})
+    hl_col = sub_sec.get("highlight_color", "#ffe600")
+    active_pos = str(hook_sec.get("position", "upper_center"))
+    sub_sample_cfg = {
+        "font_size": int(sub_sec.get("font_size", 74)),
+        "font_color": sub_sec.get("font_color", "#ffffff"),
+        "highlight_color": hl_col,
+        "border_w": 2,
+        "border_color": "#000000@0.95",
+        "shadow_x": 2,
+        "shadow_y": 2,
+        "shadow_color": "#000000@0.70",
+        "box": False,
+        "x": "center",
+        "y": 1450 if active_pos != "lower" else 1250,
+    }
+    sub_text = "CONTOH *ANIMASI* SUBTITEL"
+    sub_layer = render_text_layer(sub_text, sub_sample_cfg, 1080, 1920)
+    bg.paste(sub_layer, (0, 0), sub_layer)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    bg.save(out_path, "PNG")
+    bg.convert("RGB").save(out_path, "PNG")
     return out_path
 
 
@@ -2634,6 +2669,11 @@ async def style_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         preset_name = parts[2]
         if preset_name in PRESET_NAMES:
             style["preset"] = preset_name
+            preset_def = PRESET_DEFAULTS.get(preset_name, {})
+            if "highlight_color" in preset_def:
+                style["highlight_color"] = preset_def["highlight_color"]
+            if "position" in preset_def:
+                style["position"] = preset_def["position"]
     elif action == "pos" and len(parts) > 2:
         pos_name = parts[2]
         if pos_name in POSITION_NAMES:

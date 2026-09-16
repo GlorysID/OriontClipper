@@ -1,0 +1,53 @@
+{
+  "name": "CapCut Modern",
+  "hook": {
+    "font_name": "Impact",
+    "font_size": 82,
+    "font_color": "#ffffff",
+    "highlight_color": "#00ff66",
+    "highlight_last_word": true,
+    "border_w": 2,
+    "border_color": "#000000@0.90",
+    "shadow_x": 3,
+    "shadow_y": 3,
+    "shadow_color": "#000000@0.60",
+    "box": true,
+    "box_color": "#141824@0.80",
+    "box_border_w": 24,
+    "box_radius": 24,
+    "box_outline_w": 2,
+    "box_outline_color": "#00ff66@0.70",
+    "x": "(w-text_w)/2",
+    "y": "upper_center",
+    "letter_spacing": 0,
+    "rotate": 0
+  },
+  "subtitle": {
+    "font_name": "Impact",
+    "mode": "karaoke",
+    "text_transform": "upper",
+    "font_size": 74,
+    "font_color": "#ffffff",
+    "highlight_color": "#00ff66",
+    "outline_color": "#000000",
+    "outline": 1.8,
+    "shadow": 1.2,
+    "shadow_color": "#000000",
+    "back_color": "#000000@0.7",
+    "alignment": 2,
+    "margin_v": 420,
+    "words_per_phrase": 4,
+    "max_line_chars": 26
+  },
+  "video": {
+    "background_blur": 25,
+    "background_blur_power": 5,
+    "overlay_enabled": true,
+    "width": 1080,
+    "x": "(W-w)/2",
+    "y": "(H-h)/2",
+    "border_w": 0,
+    "border_color": "#ffffff@0.70"
+  },
+  "shapes": []
+}
