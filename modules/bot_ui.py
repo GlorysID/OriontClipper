@@ -399,4 +399,9 @@ def format_delivery_caption(idx: int, moment: Any) -> str:
         f"📝 *Caption Medsos (Tinggal Salin):*\n"
         f"{moment.caption}"
     )
+    notes = [str(n).strip() for n in (getattr(moment, "campaign_notes", None) or []) if str(n).strip()]
+    if notes:
+        caption_full += "\n\n👤 *Catatan Syarat Campaign (Tanggung Jawab Akun):*\n"
+        for n in notes[:4]:
+            caption_full += f"• {escape_tg_md(n)}\n"
     return caption_full

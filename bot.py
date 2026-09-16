@@ -294,9 +294,11 @@ def run_analyze(
     progress.set("analyze", "Menganalisis semua topik & momen menarik dengan AI...")
     video_info = probe_video(source_path)
     analyzer = AIAnalyzer(logger=LOGGER)
+    video_lang = getattr(transcription, "language", None)
     moments = analyzer.analyze_segments(
         transcription.segments,
         video_info.duration,
+        video_language=video_lang,
         **campaign_analyze_kwargs(analyzer, campaign_active, campaign_rules_text),
     )
     return moments, video_info
@@ -311,9 +313,11 @@ def run_youtube_analyze(
     """AI analysis on a YouTube transcript — call in executor. Returns moments."""
     progress.set("analyze", "Menganalisis semua topik & momen menarik dengan AI...")
     analyzer = AIAnalyzer(logger=LOGGER)
+    video_lang = getattr(transcript, "language", None)
     return analyzer.analyze_segments(
         transcript.segments,
         transcript.duration,
+        video_language=video_lang,
         **campaign_analyze_kwargs(analyzer, campaign_active, campaign_rules_text),
     )
 
@@ -501,6 +505,7 @@ def run_youtube_render_single(
         # Sinyal risiko AI ikut di-rebase: tanpa baris ini jejak risk_flags hilang
         # begitu klip dibingkai ulang, dan gerbang manusia jadi buta.
         risk_flags=list(getattr(snapped_moment, "risk_flags", None) or []),
+        campaign_notes=list(getattr(snapped_moment, "campaign_notes", None) or []),
     )
 
     try:
@@ -591,6 +596,18 @@ def build_clip_catalog_messages(
                 stale = campaign_binding_note(job, profile)
                 cname = escape_tg_md(str(profile.get("name", job.get("campaign_id"))))[:40]
                 header += f"🛡 Campaign: {cname}{escape_tg_md(stale)}\n\n"
+
+    # Catatan campaign non-konten (mis. syarat akun, link bio, dsb.)
+    notes: list[str] = []
+    if moments and getattr(moments[0], "campaign_notes", None):
+        notes = list(moments[0].campaign_notes)
+    elif isinstance(job, dict) and job.get("campaign_notes"):
+        notes = list(job["campaign_notes"])
+    if notes:
+        header += "👤 *Catatan Syarat Campaign (Tanggung Jawab Akun):*\n"
+        for n in notes[:6]:
+            header += f"  • _{escape_tg_md(str(n))}_\n"
+        header += "\n"
 
     messages: list[str] = []
     current = header
@@ -683,44 +700,41 @@ def campaign_job_active(job: dict | None) -> bool:
 
 
 def campaign_pending_bound(context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Read-only: True bila `pending_campaign` menunjuk campaign NON-bebas.
-
-    Dipakai SEBELUM analisis dimulai, karena snapshot `active_job["campaign_id"]`
-    baru dibuat SETELAH analisis selesai (consume_campaign_binding). Fungsi ini
-    sengaja TIDAK mem-pop pending_campaign — konsumsi tetap satu kali di
-    consume_campaign_binding supaya kegagalan transkripsi/analisis tidak
-    menghanguskan pilihan user.
-    """
+    """Read-only: True bila `pending_campaign` menunjuk campaign NON-bebas atau aturan kustom."""
     if not campaign_enabled():
         return False
     try:
+        if context.user_data.get("pending_campaign_rules"):
+            return True
+        job = context.user_data.get("active_job")
+        if isinstance(job, dict) and job.get("campaign_rules_text"):
+            return True
         pid = context.user_data.get("pending_campaign")
     except AttributeError:
         return False
     if not pid or str(pid) == CAMPAIGN_FREE_ID:
         return False
-    if campaign_get_profile(str(pid)) is None:
-        # Profil tidak terbaca: tetap anggap terikat (job nanti juga akan
-        # memakai campaign_id ini) — jangan suntik hashtag generik buta.
-        LOGGER.warning("pending_campaign '%s' tidak bisa dimuat; analisis tetap dikunci campaign.", pid)
     return True
 
 
 def campaign_pending_rules_text(context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Teks aturan S&K untuk prompt AI — dibaca SEBELUM active_job dibuat.
-
-    Sama pola dengan ``campaign_pending_bound`` (read-only, tidak mengkonsumsi
-    pending_campaign). Hasil ``""`` berarti tidak ada yang diinjeksikan, jadi
-    perilaku analisis lama tidak berubah sedikit pun.
-    """
+    """Teks aturan S&K / brief bebas untuk prompt AI — dibaca SEBELUM active_job dibuat."""
     if not campaign_enabled():
         return ""
     try:
+        custom = context.user_data.get("pending_campaign_rules")
+        if custom and str(custom).strip():
+            return str(custom).strip()
+        job = context.user_data.get("active_job")
+        if isinstance(job, dict) and job.get("campaign_rules_text"):
+            return str(job.get("campaign_rules_text")).strip()
         pid = context.user_data.get("pending_campaign")
     except AttributeError:
         return ""
     if not pid or str(pid) == CAMPAIGN_FREE_ID:
         return ""
+    if str(pid) == "custom":
+        return str(context.user_data.get("pending_campaign_rules") or "").strip()
     profile = campaign_get_profile(str(pid))
     if profile is None:
         return ""
@@ -734,6 +748,15 @@ def campaign_pending_rules_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 def campaign_get_profile(campaign_id: str) -> dict[str, Any] | None:
     if not campaign_enabled() or not campaign_id:
         return None
+    if campaign_id == "custom":
+        return {
+            "id": "custom",
+            "name": "Aturan Kustom",
+            "strictness": "standard",
+            "profile_version": 1,
+            "clip_rules": {},
+            "post_rules": {},
+        }
     try:
         return cp.load_profile(campaign_id)
     except Exception as exc:
@@ -905,10 +928,12 @@ def campaign_reminders_text(profile: dict[str, Any]) -> str:
 
 
 def build_campaign_menu_keyboard() -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("✍️ Ketik Aturan Campaign (Bebas)", callback_data="camp:set:custom")],
+    ]
     for meta in campaign_list_profiles():
         pid = re.sub(r"[^A-Za-z0-9_\-.]", "", str(meta.get("id", "")))[:40]
-        if not pid:
+        if not pid or pid == CAMPAIGN_FREE_ID:
             continue
         name = str(meta.get("name") or pid)[:22]
         strict = str(meta.get("strictness") or "")[:10]
@@ -925,14 +950,16 @@ def build_campaign_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def build_campaign_gate_keyboard() -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("✍️ Ketik Aturan Campaign (Bebas)", callback_data="camp:job:custom")],
+    ]
     for meta in campaign_list_profiles():
         pid = re.sub(r"[^A-Za-z0-9_\-.]", "", str(meta.get("id", "")))[:40]
         if not pid or pid == CAMPAIGN_FREE_ID:
             continue
         name = str(meta.get("name") or pid)[:26]
         rows.append([InlineKeyboardButton(f"🎯 {name}", callback_data=f"camp:job:{pid}")])
-    rows.append([InlineKeyboardButton("✅ Bebas (tanpa aturan)", callback_data="camp:job:bebas")])
+    rows.append([InlineKeyboardButton("🆓 Bebas (tanpa aturan)", callback_data="camp:job:bebas")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -941,6 +968,8 @@ def consume_campaign_binding(context: ContextTypes.DEFAULT_TYPE) -> tuple[str | 
     pid = context.user_data.pop("pending_campaign", None)
     if not pid or not campaign_enabled():
         return (None, None)
+    if str(pid) == "custom":
+        return ("custom", 1)
     profile = campaign_get_profile(str(pid))
     return (str(pid), profile.get("profile_version") if profile else None)
 
@@ -1001,6 +1030,9 @@ async def campaign_show_status(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
     if pending:
         if str(pending) == CAMPAIGN_FREE_ID:
             parts.append("⏭ Video berikutnya: *Bebas* (tanpa aturan).")
+        elif str(pending) == "custom":
+            rules_snippet = campaign_short(str(context.user_data.get("pending_campaign_rules") or ""), 120)
+            parts.append(f"⏭ Video berikutnya terikat: *Aturan Kustom*\n📝 _{rules_snippet}_\n(kirim /campaign lagi untuk ganti).")
         else:
             prof = campaign_get_profile(str(pending))
             nm = escape_tg_md(str((prof or {}).get("name", pending))) if prof else escape_tg_md(str(pending))
@@ -1011,44 +1043,55 @@ async def campaign_show_status(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
         parts.append("⏭ Belum ada campaign diantrekan — kamu akan ditanya saat kirim video baru.")
 
     if campaign_job_active(job):
-        prof = campaign_get_profile(str(cid))
-        if prof:
-            label = escape_tg_md(str(prof.get("name", cid)))
-            parts.append(f"📌 Job aktif: *{label}*{campaign_binding_note(job, prof)}")
-            moments = job.get("moments") or []
-            if moments:
-                verdicts = ensure_campaign_verdicts(job)
-                if verdicts:
-                    flat = [v for clip_vs in verdicts for v in (clip_vs or [])]
-                    agg = "?"
-                    try:
-                        agg = str(cp.aggregate_level(flat))
-                    except Exception:
-                        pass
-                    fails = [v for v in flat if getattr(v, "level", "") == "fail"]
-                    warns = [v for v in flat if getattr(v, "level", "") == "warn"]
-                    soft = [
-                        v for v in flat
-                        if campaign_verdict_is_soft(v) and str(getattr(v, "level", "")) in ("warn", "info")
-                    ]
-                    parts.append(
-                        f"📊 Verdict agregat: {CAMPAIGN_LEVEL_EMOJI.get(agg, '•')} `{agg}` "
-                        f"(klip gagal: {len(fails)} • peringatan: {len(warns)})"
-                    )
-                    if soft:
+        if str(cid) == "custom":
+            parts.append("📌 Job aktif: *Aturan Kustom (Bebas)*")
+            c_rules = job.get("campaign_rules_text") or ""
+            if c_rules:
+                parts.append(f"📝 *Aturan:* _{campaign_short(str(c_rules), 140)}_")
+            notes = job.get("campaign_notes") or []
+            if notes:
+                parts.append("👤 *Catatan Syarat Akun / Luar Kendali:*")
+                for n in list(notes)[:6]:
+                    parts.append(f"  • {escape_tg_md(str(n))}")
+        else:
+            prof = campaign_get_profile(str(cid))
+            if prof:
+                label = escape_tg_md(str(prof.get("name", cid)))
+                parts.append(f"📌 Job aktif: *{label}*{campaign_binding_note(job, prof)}")
+                moments = job.get("moments") or []
+                if moments:
+                    verdicts = ensure_campaign_verdicts(job)
+                    if verdicts:
+                        flat = [v for clip_vs in verdicts for v in (clip_vs or [])]
+                        agg = "?"
+                        try:
+                            agg = str(cp.aggregate_level(flat))
+                        except Exception:
+                            pass
+                        fails = [v for v in flat if getattr(v, "level", "") == "fail"]
+                        warns = [v for v in flat if getattr(v, "level", "") == "warn"]
+                        soft = [
+                            v for v in flat
+                            if campaign_verdict_is_soft(v) and str(getattr(v, "level", "")) in ("warn", "info")
+                        ]
                         parts.append(
-                            f"🤖 Sinyal AI / gerbang manusia yang perlu kamu putuskan: {len(soft)}"
+                            f"📊 Verdict agregat: {CAMPAIGN_LEVEL_EMOJI.get(agg, '•')} `{agg}` "
+                            f"(klip gagal: {len(fails)} • peringatan: {len(warns)})"
                         )
-            acked = [k for k in campaign_ack_set(job) if isinstance(k, str)]
-            if acked:
-                parts.append(f"✅ Sudah kamu akui: {len(acked)} gerbang campaign.")
-            # Pengingat sekali: arahan kurasi + tanggung jawab manusia.
-            rem = campaign_reminders_text(prof)
-            if rem:
-                parts.append(rem)
-        tail = campaign_overrides_tail_text(str(cid))
-        if tail:
-            parts.append(tail)
+                        if soft:
+                            parts.append(
+                                f"🤖 Sinyal AI / gerbang manusia yang perlu kamu putuskan: {len(soft)}"
+                            )
+                acked = [k for k in campaign_ack_set(job) if isinstance(k, str)]
+                if acked:
+                    parts.append(f"✅ Sudah kamu akui: {len(acked)} gerbang campaign.")
+                # Pengingat sekali: arahan kurasi + tanggung jawab manusia.
+                rem = campaign_reminders_text(prof)
+                if rem:
+                    parts.append(rem)
+            tail = campaign_overrides_tail_text(str(cid))
+            if tail:
+                parts.append(tail)
     elif isinstance(job, dict) and job.get("awaiting_campaign"):
         parts.append("⏳ Menunggu pilihan campaign untuk video yang baru dikirim.")
     elif cid:
@@ -1120,10 +1163,10 @@ async def campaign_gate(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
     context.user_data["active_job"] = {"awaiting_campaign": awaiting}
     try:
         await update.effective_message.reply_text(
-            "🎯 *Pilih campaign untuk video ini dulu:*\n\n"
-            "Aturan hanya berlaku untuk video INI — video berikutnya ditanya lagi "
-            "(kecuali kamu pasang lewat /campaign).\n"
-            "Tanpa aturan? Pilih ✅ *Bebas*.",
+            "🎯 *Pilih atau ketik aturan campaign untuk video ini:*\n\n"
+            "• Tekan tombol *✍️ Ketik Aturan Campaign* (atau langsung balas/ketik teks aturanmu di chat ini).\n"
+            "• Tanpa aturan? Pilih *🆓 Bebas*.\n\n"
+            "💡 _AI OriontClipper akan menalar apa yang boleh & dilarang dalam video. Syarat non-video (seperti minimal follower akun) akan dicatat sebagai pengingat._",
             parse_mode="Markdown",
             reply_markup=build_campaign_gate_keyboard(),
         )
@@ -1781,11 +1824,32 @@ async def campaign_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     if action == "set":
+        if arg == "custom":
+            context.user_data["awaiting_custom_rules"] = "global"
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "✍️ *Ketik Aturan Campaign Bebas:*\n\n"
+                    "Silakan ketik atau tempel aturan/brief campaign kamu langsung di chat ini.\n\n"
+                    "Contoh:\n"
+                    "• Wajib bahas topik AI, jangan sebut kompetitor X\n"
+                    "• Durasi klip 30-60 detik\n"
+                    "• Syarat akun: minimal 1000 follower & wajib sertakan link bio\n\n"
+                    "💡 _AI OriontClipper akan menyaring klip sesuai aturan video, dan menampilkan syarat akun (seperti follower) sebagai pengingat._\n"
+                    "_Ketik /cancel untuk membatalkan._"
+                ),
+                parse_mode="Markdown",
+            )
+            return
         if arg == CAMPAIGN_FREE_ID:
+            context.user_data.pop("pending_campaign_rules", None)
+            context.user_data.pop("awaiting_custom_rules", None)
             await campaign_select_and_summary(context, chat_id, CAMPAIGN_FREE_ID)
             return
         known = {str(m.get("id", "")) for m in campaign_list_profiles()}
         if arg and arg in known:
+            context.user_data.pop("pending_campaign_rules", None)
+            context.user_data.pop("awaiting_custom_rules", None)
             await campaign_select_and_summary(context, chat_id, arg)
         else:
             await context.bot.send_message(chat_id=chat_id, text="Profil campaign tidak dikenal.")
@@ -1795,7 +1859,7 @@ async def campaign_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         job = context.user_data.get("active_job")
         awaiting = None
         if isinstance(job, dict):
-            awaiting = job.pop("awaiting_campaign", None)
+            awaiting = job.get("awaiting_campaign")
         if not awaiting:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -1803,6 +1867,31 @@ async def campaign_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 reply_markup=MAIN_MENU,
             )
             return
+
+        if arg == "custom":
+            context.user_data["awaiting_custom_rules"] = "job"
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "✍️ *Ketik Aturan Campaign untuk Video Ini:*\n\n"
+                    "Silakan ketik atau tempel aturan/brief campaign kamu langsung di chat ini.\n\n"
+                    "Contoh:\n"
+                    "• Video wajib fokus ke topik tertentu\n"
+                    "• Dilarang sebut brand kompetitor\n"
+                    "• Akun harus 1000 followers\n\n"
+                    "💡 _AI OriontClipper akan menalar aturan video (apa yang boleh & dilarang). Syarat akun seperti follower akan otomatis dicatat sebagai pengingat._\n"
+                    "_Ketik /cancel untuk membatalkan._"
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        # Pilihan selain custom (misal Bebas atau profil preset)
+        if isinstance(job, dict):
+            job.pop("awaiting_campaign", None)
+        context.user_data.pop("awaiting_custom_rules", None)
+        context.user_data.pop("pending_campaign_rules", None)
+
         if arg == CAMPAIGN_FREE_ID:
             context.user_data["pending_campaign"] = CAMPAIGN_FREE_ID
         else:
@@ -1814,7 +1903,8 @@ async def campaign_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     arg = CAMPAIGN_FREE_ID
             context.user_data["pending_campaign"] = arg
         if not try_claim_lock():
-            job["awaiting_campaign"] = awaiting
+            if isinstance(job, dict):
+                job["awaiting_campaign"] = awaiting
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="⏳ Bot sedang memproses video user lain. Tekan lagi tombol campaign-nya sebentar lagi.",
@@ -2336,17 +2426,25 @@ async def campaign_import_handle_text(
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/cancel — batal state impor S&K (jalur instruksi menu); selain itu no-op ramah."""
+    """/cancel — batal state impor S&K atau input aturan campaign kustom; selain itu no-op ramah."""
     if not is_allowed(update.effective_user.id):
         return
+    canceled = False
+    if context.user_data.pop("awaiting_custom_rules", None):
+        canceled = True
+    job = context.user_data.get("active_job")
+    if isinstance(job, dict) and job.pop("awaiting_custom_rules", None):
+        canceled = True
     if campaign_import_clear(context):
+        canceled = True
+    if canceled:
         await update.message.reply_text(
-            "🚫 Impor S&K dibatalkan.",
+            "🚫 Pengisian aturan / brief campaign dibatalkan.",
             reply_markup=MAIN_MENU,
         )
         return
     await update.message.reply_text(
-        "Tidak ada impor S&K yang berjalan. /done untuk membersihkan sesi klip.",
+        "Tidak ada proses input aturan yang berjalan. /done untuk membersihkan sesi klip.",
         reply_markup=MAIN_MENU,
     )
 
@@ -2913,6 +3011,8 @@ async def run_processing_flow(
             "rendering": False,
             "campaign_id": camp_id,
             "campaign_version": camp_ver,
+            "campaign_rules_text": camp_rules,
+            "campaign_notes": getattr(moments[0], "campaign_notes", []) if moments else [],
         }
 
         # Clean up the loading HUD message & sticker message
@@ -3107,6 +3207,8 @@ async def run_youtube_flow(
             "rendering": False,
             "campaign_id": camp_id,
             "campaign_version": camp_ver,
+            "campaign_rules_text": camp_rules,
+            "campaign_notes": getattr(moments[0], "campaign_notes", []) if moments else [],
         }
 
         # Clean up the loading HUD message & sticker message
@@ -3611,6 +3713,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     is_gdrive = gdrive_flow.is_gdrive_url(text)
     is_yt = is_youtube_url(text)
+
+    # Intersep input aturan campaign kustom (bebas)
+    awaiting_custom = context.user_data.get("awaiting_custom_rules")
+    job = context.user_data.get("active_job")
+    has_awaiting_job = isinstance(job, dict) and "awaiting_campaign" in job
+
+    if (awaiting_custom or has_awaiting_job) and not is_yt and not is_gdrive:
+        context.user_data.pop("awaiting_custom_rules", None)
+        rules_text = text.strip()
+        context.user_data["pending_campaign"] = "custom"
+        context.user_data["pending_campaign_rules"] = rules_text
+
+        if has_awaiting_job:
+            awaiting = job.pop("awaiting_campaign")
+            if not try_claim_lock():
+                job["awaiting_campaign"] = awaiting
+                await update.message.reply_text(
+                    "⏳ Bot sedang memproses video user lain. Kirim ulang aturanmu sebentar lagi.",
+                )
+                return
+            try:
+                await update.message.reply_text(
+                    "🎯 *Aturan campaign kustom diterima!*\n\n"
+                    "🤖 AI OriontClipper akan menalar apa yang boleh & dilarang dalam video.\n"
+                    "📋 Syarat akun (seperti jumlah follower) akan dicatat sebagai pengingat.\n"
+                    "🚀 *Memulai pemrosesan video...*",
+                    parse_mode="Markdown",
+                )
+                await resume_job_from_callback(update, context, awaiting)
+            finally:
+                release_lock()
+            return
+        else:
+            await update.message.reply_text(
+                "🎯 *Aturan campaign kustom berhasil disimpan!*\n\n"
+                "Aturan ini akan dipakai saat kamu mengirim video berikutnya.\n"
+                "Ketik /campaign show untuk melihat status aturan kapan saja.",
+                parse_mode="Markdown",
+                reply_markup=MAIN_MENU,
+            )
+            return
 
     if not is_yt and not is_gdrive:
         await update.message.reply_text(

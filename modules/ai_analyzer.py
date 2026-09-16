@@ -16,11 +16,12 @@ import config
 
 
 SYSTEM_PROMPT = (
-    "Kamu adalah Art Director, Editor Video Profesional, dan Short-Form Content Strategist "
-    "untuk TikTok, Instagram Reels, dan YouTube Shorts. "
-    "Tugasmu adalah menganalisis transkrip audio, membuang semua basa-basi, dan memilih segmen "
-    "yang punya daya tarik viral tinggi, narasi utuh, dan retensi maksimal. "
-    "Kamu HANYA mengembalikan JSON valid sesuai skema yang diminta, tanpa markdown fences, tanpa pengantar atau penutup."
+    "You are an elite Art Director, Professional Video Editor, and Viral Short-Form Content Strategist "
+    "for TikTok, Instagram Reels, and YouTube Shorts. "
+    "Your job is to analyze video transcripts, remove fluff, and discover viral standalone clip segments. "
+    "MANDATORY REQUIREMENT: You MUST ALWAYS output all textual fields ('hook', 'topic', 'alasan', 'caption') "
+    "in the EXACT SAME LANGUAGE as the video audio/transcript (e.g., English audio -> English output; Indonesian audio -> Indonesian output). "
+    "You ONLY return a valid JSON object matching the requested schema, without markdown fences or pleasantries."
 )
 
 USER_PROMPT_TEMPLATE = """Analisis transkrip video berikut (format [start-end] kalimat per baris).
@@ -63,17 +64,23 @@ METADATA YANG HARUS DIHASILKAN PER KLIP:
 4. 'last_words': 3-5 kata terakhir kalimat penutup.
 5. 'viral_score': nilai potensi viralitas 1-100.
 6. 'rank': nomor urut peringkat (1 = paling berpotensi viral).
-7. 'hook': 1 kalimat hook pembuka paling punchy untuk teks on-screen (maksimal 8 kata, HURUF KAPITAL).
-8. 'topic': ringkasan 1 kalimat padat tentang konteks klip.
-9. 'alasan': penjelasan 1-2 kalimat mengapa klip ini sangat berpotensi FYP/viral dan trigger emosionalnya.
+7. 'hook': 1 kalimat hook pembuka paling punchy untuk teks on-screen (maksimal 8 kata, HURUF KAPITAL, DALAM BAHASA VIDEO).
+8. 'topic': ringkasan 1 kalimat padat tentang konteks klip (DALAM BAHASA VIDEO).
+9. 'alasan': penjelasan 1-2 kalimat mengapa klip ini sangat berpotensi FYP/viral dan penjelasan kesesuaian aturan campaign jika ada (DALAM BAHASA VIDEO).
 10. 'bgm_mood': pilih 1 mood musik: "chill", "epic", "sad", "upbeat", atau "suspense".
-11. 'caption': teks caption medsos menarik siap posting lengkap dengan 3-5 hashtag relevan.
+11. 'caption': teks caption medsos menarik siap posting lengkap dengan 3-5 hashtag relevan (DALAM BAHASA VIDEO).
 
-BAHASA OUTPUT:
-- Sesuaikan bahasa 'hook', 'topic', 'alasan', dan 'caption' dengan bahasa transkrip (Indonesia -> Bahasa Indonesia natural & kekinian; Inggris -> Bahasa Inggris catchy).
+ATURAN MUTLAK BAHASA OUTPUT (CRITICAL LANGUAGE REQUIREMENT):
+- Bahasa target video ini adalah: {target_language_name} ({target_language_code}).
+- SEMUA teks hasil clipping ('hook', 'topic', 'alasan', 'caption') WAJIB 100% menggunakan bahasa yang SAMA PERSIS dengan bahasa transkrip video ({target_language_name})!
+- Jika transkrip video berbahasa Inggris, maka 'hook', 'topic', 'alasan', dan 'caption' HARUS 100% ditulis dalam Bahasa Inggris! DILARANG KERAS menggunakan Bahasa Indonesia jika transkrip video berbahasa Inggris.
+- Jika transkrip video berbahasa Indonesia, gunakan Bahasa Indonesia yang natural, kekinian, dan menarik.
+- Jika transkrip video berbahasa lain (Spanyol, Jepang, Mandarin, dll.), gunakan bahasa tersebut secara konsisten.
+- DILARANG mencampur bahasa atau menggunakan bahasa yang berbeda dari bahasa penutur di video!
 
 Kembalikan HANYA JSON object valid dengan format persis berikut:
 {{
+  "campaign_notes": ["<catatan syarat akun / hal di luar kendali AI yang perlu diingat user jika ada, atau []>"],
   "clips": [
     {{
       "rank": 1,
@@ -82,11 +89,11 @@ Kembalikan HANYA JSON object valid dengan format persis berikut:
       "end": <detik_float>,
       "first_words": "<3-5 kata pertama>",
       "last_words": "<3-5 kata terakhir>",
-      "hook": "<KALIMAT HOOK MAKS 8 KATA HURUF KAPITAL>",
-      "topic": "<ringkasan 1 kalimat topik>",
-      "alasan": "<alasan trigger viralitas & retensi>",
+      "hook": "<KALIMAT HOOK MAKS 8 KATA HURUF KAPITAL DALAM BAHASA VIDEO>",
+      "topic": "<ringkasan 1 kalimat topik dalam bahasa video>",
+      "alasan": "<alasan trigger viralitas & kesesuaian campaign dalam bahasa video>",
       "bgm_mood": "upbeat",
-      "caption": "<caption medsos menarik lengkap hashtag>"
+      "caption": "<caption medsos menarik lengkap hashtag dalam bahasa video>"
     }}
   ]
 }}
@@ -96,22 +103,64 @@ Transkrip:
 """
 
 
+
 # --- Campaign add-ons (hanya dipakai bila campaign_rules_text terisi) -------- #
 # JANGAN mengubah USER_PROMPT_TEMPLATE di atas: jalur tanpa campaign harus
 # menghasilkan prompt BYTE-IDENTIK. Aturan campaign disuntik lewat replace anchor
 # di bawah ini, dengan fallback append-safe bila anchor tak ditemukan.
 _CAPTION_META_ANCHOR = (
-    "11. 'caption': teks caption medsos menarik siap posting lengkap dengan 3-5 hashtag relevan.\n"
+    "11. 'caption': teks caption medsos menarik siap posting lengkap dengan 3-5 hashtag relevan (DALAM BAHASA VIDEO).\n"
 )
 _RISK_FLAGS_META_LINE = (
     "12. 'risk_flags': daftar id risiko yang TERPENUHI untuk klip ini, HANYA dari id yang "
     "disebut di blok ATURAN CAMPAIGN; isi [] bila tidak ada.\n"
 )
-_SCHEMA_CAPTION_ANCHOR = '"caption": "<caption medsos menarik lengkap hashtag>"'
+_SCHEMA_CAPTION_ANCHOR = '"caption": "<caption medsos menarik lengkap hashtag dalam bahasa video>"'
 _SCHEMA_RISK_FLAGS_LINE = (
     ',\n      "risk_flags": ["<id risiko terpenuhi dari ATURAN CAMPAIGN, atau []>"]'
 )
 _TRANSCRIPT_ANCHOR = "Transkrip:\n{transcript}"
+
+
+def detect_transcript_language(transcript: str, hint_language: str | None = None) -> tuple[str, str]:
+    """Detect language code and human name from transcript or hint."""
+    hint = (hint_language or "").strip().lower()
+    if hint and hint not in ("auto", "none", "unknown"):
+        if hint.startswith("en"):
+            return "en", "English"
+        if hint.startswith("id"):
+            return "id", "Indonesian (Bahasa Indonesia)"
+        if hint.startswith("es"):
+            return "es", "Spanish"
+        if hint.startswith("ja"):
+            return "ja", "Japanese"
+        if hint.startswith("zh"):
+            return "zh", "Chinese"
+        if hint.startswith("de"):
+            return "de", "German"
+        if hint.startswith("fr"):
+            return "fr", "French"
+        if hint.startswith("ar"):
+            return "ar", "Arabic"
+        if hint.startswith("pt"):
+            return "pt", "Portuguese"
+        if hint.startswith("ru"):
+            return "ru", "Russian"
+        return hint, hint.upper()
+
+    sample = transcript[:3000].lower()
+    id_words = {"yang", "dan", "di", "ini", "itu", "dengan", "untuk", "dari", "tidak", "ada", "bisa", "mereka", "kita", "kamu", "saya", "jadi", "karena"}
+    en_words = {"the", "and", "in", "this", "that", "with", "for", "from", "not", "have", "can", "they", "we", "you", "my", "so", "because", "what", "about"}
+    tokens = set(re.findall(r"\b[a-z]{2,}\b", sample))
+    id_matches = len(tokens.intersection(id_words))
+    en_matches = len(tokens.intersection(en_words))
+
+    if en_matches > id_matches and en_matches >= 3:
+        return "en", "English"
+    if id_matches > en_matches and id_matches >= 3:
+        return "id", "Indonesian (Bahasa Indonesia)"
+
+    return ("en", "English") if en_matches >= id_matches else ("id", "Indonesian (Bahasa Indonesia)")
 
 
 def sanitize_flag(value: Any) -> str:
@@ -148,22 +197,48 @@ def parse_risk_flags(raw: Any, limit: int = 6) -> list[str]:
     return out
 
 
-def inject_campaign_rules(prompt: str, campaign_rules_text: str | None) -> str:
-    """Sematkan blok aturan campaign + syarat field ``risk_flags`` ke prompt base.
+def parse_campaign_notes(raw: Any, limit: int = 10) -> list[str]:
+    """Ekstraksi catatan syarat campaign non-konten (mis. akun minimal 1000 followers)."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for entry in raw:
+        s = " ".join(str(entry or "").strip().split())
+        if s and s not in out:
+            out.append(s)
+        if len(out) >= limit:
+            break
+    return out
 
-    ``campaign_rules_text`` kosong/None -> prompt dikembalikan apa adanya.
-    """
+
+def inject_campaign_rules(prompt: str, campaign_rules_text: str | None) -> str:
+    """Sematkan blok aturan campaign + instruksi penalaran dan pemisahan syarat akun ke prompt base."""
     rules = (campaign_rules_text or "").strip()
     if not rules:
         return prompt
 
     block = (
-        "\nATURAN CAMPAIGN DARI PARTNER (WAJIB):\n"
-        + rules
-        + "\n\nUntuk SETIAP klip, tambahkan field \"risk_flags\": list string berisi id risiko "
-        "dari aturan di atas yang benar-benar terpenuhi di klip itu (kosongkan [] bila aman). "
-        "Jangan mengarang id di luar daftar tersebut, dan jangan menolak klip hanya karena flag "
-        "— flag hanyalah sinyal untuk review manusia.\n"
+        "\n=======================================================\n"
+        "🎯 ATURAN & BRIEF CAMPAIGN DARI USER (WAJIB DIIKUTI & DINALAR OLEH AI):\n"
+        f"{rules}\n\n"
+        "INSTRUKSI PENALARAN CAMPAIGN UNTUK AI:\n"
+        "1. PILAH ATURAN KONTEN VIDEO vs ATURAN DI LUAR TANGGUNG JAWAB AI:\n"
+        "   a) ATURAN KONTEN VIDEO (Apa yang boleh & tidak boleh di dalam klip):\n"
+        "      - Pahami topik yang dicari, kriteria kurasi, gaya/tone bicara, serta hal-hal yang dilarang diucapkan/dibahas.\n"
+        "      - HANYA pilih dan prioritaskan momen yang selaras dengan kriteria ini. Buang dan eliminasi segmen yang melanggar!\n"
+        "      - Pada SETIAP klip yang dipilih, di field 'alasan', sertakan penjelasan singkat mengapa klip ini cocok dan memenuhi aturan campaign tersebut.\n"
+        "   b) ATURAN DI LUAR KENDALI VIDEO / SYARAT AKUN (Out-of-scope / Account Rules):\n"
+        "      - Jika ada aturan yang berkaitan dengan akun, profil, posting, atau metrik (contoh: 'akun harus minimal 1000 followers', 'wajib pasang link di bio', 'upload jam 19:00', 'username tanpa kata clips', dll.), "
+        "AI TIDAK PERLU menolak klip karena syarat ini (karena syarat ini di luar kendali editing video).\n"
+        "      - Ekstrak syarat-syarat non-video tersebut ke dalam field 'campaign_notes': list string berisi ringkasan catatan/pengingat untuk user "
+        "(contoh: [\"Akun harus minimal 1000 followers\", \"Wajib pasang link di bio\"]). Isi [] jika tidak ada syarat non-video.\n"
+        "2. Sesuaikan 'hook' dan 'caption' agar mendukung pesan dan tujuan campaign di atas.\n"
+        "3. Untuk field 'risk_flags': jika ada sinyal risiko atau flag yang terpicu dari aturan di atas, cantumkan id-nya, atau kosongkan [] bila aman.\n"
+        "=======================================================\n"
     )
 
     if _CAPTION_META_ANCHOR in prompt:
@@ -171,9 +246,8 @@ def inject_campaign_rules(prompt: str, campaign_rules_text: str | None) -> str:
     if _SCHEMA_CAPTION_ANCHOR in prompt:
         prompt = prompt.replace(_SCHEMA_CAPTION_ANCHOR, _SCHEMA_CAPTION_ANCHOR + _SCHEMA_RISK_FLAGS_LINE, 1)
     if _TRANSCRIPT_ANCHOR in prompt:
-        # Letak: sesudah contoh skema JSON, sebelum heading "Transkrip:".
         prompt = prompt.replace(_TRANSCRIPT_ANCHOR, block + "\n" + _TRANSCRIPT_ANCHOR, 1)
-    else:  # fallback: jangan pernah buang aturan campaign
+    else:
         prompt = prompt + block
     return prompt
 
@@ -183,15 +257,18 @@ def build_user_prompt(
     campaign_rules_text: str | None = None,
     min_duration: float | None = None,
     max_duration: float | None = None,
+    video_language: str | None = None,
 ) -> str:
-    """Render user prompt. Tanpa ``campaign_rules_text`` -> persis seperti sebelumnya."""
+    """Render user prompt dengan bahasa video dinamis dan injeksi aturan campaign."""
+    lang_code, lang_name = detect_transcript_language(transcript, video_language)
     prompt = USER_PROMPT_TEMPLATE.format(
         transcript="{transcript}",
         min_duration=int(config.MIN_CLIP_DURATION_S if min_duration is None else min_duration),
         max_duration=int(config.MAX_CLIP_DURATION_S if max_duration is None else max_duration),
+        target_language_code=lang_code,
+        target_language_name=lang_name,
     )
     prompt = inject_campaign_rules(prompt, campaign_rules_text)
-    # Transcript disisipkan terakhir supaya isinya tidak pernah ikut di-escape/replace.
     return prompt.replace("{transcript}", transcript, 1)
 
 
@@ -223,6 +300,8 @@ class ClipMoment:
     # Id sinyal risiko dari AI (lihat campaign_policy.llm_flag_verdicts). Kosong
     # bila AI tidak menandai apa pun, jadi profil/campaign lama tetap kompatibel.
     risk_flags: list[str] = field(default_factory=list)
+    # Catatan syarat akun / hal di luar kendali AI yang perlu diingat user (mis. minimal 1000 followers)
+    campaign_notes: list[str] = field(default_factory=list)
 
 
 def strip_json_fences(content: str) -> str:
@@ -318,6 +397,8 @@ def validate_moments(
     else:
         raise AIAnalyzerError("AI response must be a JSON array or object with clips[]")
 
+    top_campaign_notes = parse_campaign_notes(raw.get("campaign_notes")) if isinstance(raw, dict) else []
+
     moments: list[ClipMoment] = []
     for item in raw_items:
         if not isinstance(item, dict):
@@ -398,6 +479,10 @@ def validate_moments(
         # yang bukan list of string dianggap "tidak ada flag", bukan momen invalid.
         risk_flags = parse_risk_flags(item.get("risk_flags"))
 
+        # Extract campaign notes (syarat akun / di luar kendali AI yang perlu diingat user)
+        item_notes = parse_campaign_notes(item.get("campaign_notes"))
+        notes = item_notes or top_campaign_notes
+
         duration = end - start
         if start < 0 or start >= end:
             continue
@@ -420,6 +505,7 @@ def validate_moments(
                 first_words=first_words,
                 last_words=last_words,
                 risk_flags=risk_flags,
+                campaign_notes=notes,
             )
         )
         if len(moments) >= max_clips:
@@ -601,6 +687,7 @@ def snap_moment_to_transcript(moment: ClipMoment, segments: Iterable[Any]) -> Cl
         first_words=moment.first_words,
         last_words=moment.last_words,
         risk_flags=list(moment.risk_flags),
+        campaign_notes=list(getattr(moment, "campaign_notes", []) or []),
     )
 
 
@@ -682,6 +769,7 @@ def dedupe_moments(
                 first_words=m.first_words,
                 last_words=m.last_words,
                 risk_flags=list(m.risk_flags),
+                campaign_notes=list(getattr(m, "campaign_notes", []) or []),
             )
         )
     return ranked_moments
@@ -706,6 +794,8 @@ class AIAnalyzer:
         video_duration_s: float,
         campaign_active: bool = False,
         campaign_rules_text: str | None = None,
+        video_language: str | None = None,
+        **kwargs: Any,
     ) -> list[ClipMoment]:
         transcript = transcript_text_from_segments(segments)
         if not transcript:
@@ -715,6 +805,8 @@ class AIAnalyzer:
             video_duration_s,
             campaign_active=campaign_active,
             campaign_rules_text=campaign_rules_text,
+            video_language=video_language,
+            **kwargs,
         )
         # Snap all moments to exact sentence boundaries using first_words/last_words
         snapped = [snap_moment_to_transcript(m, segments) for m in moments]
@@ -726,6 +818,8 @@ class AIAnalyzer:
         video_duration_s: float,
         campaign_active: bool = False,
         campaign_rules_text: str | None = None,
+        video_language: str | None = None,
+        **kwargs: Any,
     ) -> list[ClipMoment]:
         chunks = split_transcript_text(transcript)
         if len(chunks) == 1:
@@ -734,6 +828,8 @@ class AIAnalyzer:
                 video_duration_s,
                 campaign_active=campaign_active,
                 campaign_rules_text=campaign_rules_text,
+                video_language=video_language,
+                **kwargs,
             )
 
         self.logger.info(
@@ -752,6 +848,8 @@ class AIAnalyzer:
                         video_duration_s,
                         campaign_active=campaign_active,
                         campaign_rules_text=campaign_rules_text,
+                        video_language=video_language,
+                        **kwargs,
                     )
                 )
             except AIAnalyzerError as exc:
@@ -771,6 +869,8 @@ class AIAnalyzer:
         video_duration_s: float,
         campaign_active: bool = False,
         campaign_rules_text: str | None = None,
+        video_language: str | None = None,
+        **kwargs: Any,
     ) -> list[ClipMoment]:
         response_format_enabled = True
         last_error: Exception | None = None
@@ -778,7 +878,10 @@ class AIAnalyzer:
         for attempt in range(1, config.MAX_RETRIES + 1):
             try:
                 content = self._request_chat_completion(
-                    transcript, response_format_enabled, campaign_rules_text=campaign_rules_text
+                    transcript,
+                    response_format_enabled,
+                    campaign_rules_text=campaign_rules_text,
+                    video_language=video_language,
                 )
                 raw = parse_json_content(content)
                 moments = validate_moments(raw, video_duration_s, campaign_active=campaign_active)
@@ -815,6 +918,7 @@ class AIAnalyzer:
         transcript: str,
         response_format_enabled: bool,
         campaign_rules_text: str | None = None,
+        video_language: str | None = None,
     ) -> str:
         try:
             import requests
@@ -831,6 +935,7 @@ class AIAnalyzer:
             campaign_rules_text,
             min_duration=int(config.MIN_CLIP_DURATION_S),
             max_duration=int(config.MAX_CLIP_DURATION_S),
+            video_language=video_language,
         )
         payload: dict[str, Any] = {
             "model": self.model,

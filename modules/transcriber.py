@@ -32,6 +32,7 @@ class TranscriptionResult:
     audio_path: Path
     srt_path: Path
     segments: list[TranscriptSegment]
+    language: str = ""
 
 
 def priority_command_prefix() -> list[str]:
@@ -456,19 +457,27 @@ class WhisperTranscriber:
 
         if cache_path.exists():
             try:
+                raw_cache = json.loads(cache_path.read_text(encoding="utf-8"))
                 segments = segments_from_json(
-                    json.loads(cache_path.read_text(encoding="utf-8")),
+                    raw_cache,
                     expected_model=self.model_name,
                     expected_language=language,
                 )
                 write_srt(segments, srt_path)
+                cached_lang = str(raw_cache.get("language") or "")
                 self.logger.info(
-                    "Loaded transcript cache: %s (segments=%d, word_timings=%s)",
+                    "Loaded transcript cache: %s (segments=%d, word_timings=%s, lang=%s)",
                     cache_path,
                     len(segments),
                     sum(1 for s in segments if s.words),
+                    cached_lang,
                 )
-                return TranscriptionResult(audio_path=audio_path, srt_path=srt_path, segments=segments)
+                return TranscriptionResult(
+                    audio_path=audio_path,
+                    srt_path=srt_path,
+                    segments=segments,
+                    language=cached_lang or self.detected_language,
+                )
             except (OSError, json.JSONDecodeError, TranscriptionError) as exc:
                 self.logger.warning(
                     "Ignoring invalid/stale transcript cache %s: %s (re-transcribing)",
@@ -505,7 +514,12 @@ class WhisperTranscriber:
             raise TranscriptionError(f"Unexpected transcription/SRT error: {exc}") from exc
 
         self.logger.info("Wrote transcript SRT: %s", srt_path)
-        return TranscriptionResult(audio_path=audio_path, srt_path=srt_path, segments=segments)
+        return TranscriptionResult(
+            audio_path=audio_path,
+            srt_path=srt_path,
+            segments=segments,
+            language=self.detected_language,
+        )
 
 
 def parse_args() -> argparse.Namespace:
