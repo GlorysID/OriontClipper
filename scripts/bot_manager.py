@@ -14,15 +14,54 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
-def get_bot_processes() -> list[dict[str, Any]]:
-    """Return list of running bot.py and START_BOT runner processes."""
+def get_excluded_pids() -> set[int]:
+    """Return set of PIDs that must NEVER be terminated (self and parents/ancestors)."""
+    pids = {os.getpid()}
+    try:
+        curr = os.getppid()
+        pids.add(curr)
+        ps_cmd = (
+            f"$p = {curr}; "
+            "while ($p -gt 0) { "
+            "  $proc = Get-CimInstance Win32_Process -Filter \"ProcessId = $p\"; "
+            "  if (-not $proc -or -not $proc.ParentProcessId -or $proc.ParentProcessId -eq $p) { break }; "
+            "  $p = [int]$proc.ParentProcessId; "
+            "  Write-Output $p "
+            "}"
+        )
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+        )
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit() and int(line) > 0:
+                pids.add(int(line))
+    except Exception:
+        pass
+    return pids
+
+
+def get_bot_processes(bot_only: bool = False) -> list[dict[str, Any]]:
+    """Return list of running bot.py and runner processes, excluding self & callers."""
+    excluded = get_excluded_pids()
+    excluded_clause = " -and ".join(f"$_.ProcessId -ne {pid}" for pid in excluded)
+
+    if bot_only:
+        targets_clause = (
+            "($_.Name -like '*python*' -and $_.CommandLine -match '\\bbot\\.py' -and $_.CommandLine -notlike '*bot_manager*')"
+        )
+    else:
+        targets_clause = (
+            "($_.Name -like '*python*' -and $_.CommandLine -match '\\bbot\\.py' -and $_.CommandLine -notlike '*bot_manager*') -or "
+            "($_.Name -like '*cmd*' -and $_.CommandLine -like '*START_BOT.bat*') -or "
+            "($_.Name -like '*wscript*' -and $_.CommandLine -like '*JALANKAN_DI_BACKGROUND*')"
+        )
+
     ps_cmd = (
         "Get-CimInstance Win32_Process | "
-        "Where-Object { "
-        "  ($_.Name -like '*python*' -and $_.CommandLine -match '\\bbot\\.py' -and $_.CommandLine -notlike '*bot_manager*') -or "
-        "  ($_.Name -like '*cmd*' -and $_.CommandLine -like '*START_BOT.bat*') -or "
-        "  ($_.Name -like '*wscript*' -and $_.CommandLine -like '*JALANKAN_DI_BACKGROUND*') "
-        "} | "
+        f"Where-Object {{ ({targets_clause}) -and ({excluded_clause}) }} | "
         "Select-Object ProcessId, Name, CommandLine | "
         "ConvertTo-Json"
     )
@@ -47,14 +86,14 @@ def get_bot_processes() -> list[dict[str, Any]]:
         return []
 
 
-def stop_bot() -> int:
+def stop_bot(bot_only: bool = False) -> int:
     """Safely terminate all running bot.py and runner processes."""
-    procs = get_bot_processes()
+    procs = get_bot_processes(bot_only=bot_only)
     if not procs:
         print("[INFO] Tidak ada proses bot.py yang sedang berjalan.")
         return 0
 
-    print(f"[!] Ditemukan {len(procs)} proses bot/runner aktif. Menghentikan...")
+    print(f"[!] Ditemukan {len(procs)} proses aktif. Menghentikan...")
     for p in procs:
         pid = p.get("ProcessId")
         name = p.get("Name", "Process")
@@ -181,8 +220,10 @@ if __name__ == "__main__":
     action = sys.argv[1].lower() if len(sys.argv) > 1 else "status"
     if action == "start":
         sys.exit(start_bot())
-    elif action == "stop":
-        sys.exit(stop_bot())
+    elif action in ("stop", "kill"):
+        sys.exit(stop_bot(bot_only=False))
+    elif action in ("clean", "stop-bot", "stop_bot_only"):
+        sys.exit(stop_bot(bot_only=True))
     elif action == "restart":
         sys.exit(restart_bot())
     elif action == "status":
@@ -190,5 +231,5 @@ if __name__ == "__main__":
     elif action == "shortcut":
         sys.exit(create_desktop_shortcut())
     else:
-        print(f"Usage: {sys.argv[0]} [start|stop|restart|status|shortcut]")
+        print(f"Usage: {sys.argv[0]} [start|stop|clean|restart|status|shortcut]")
         sys.exit(1)

@@ -28,7 +28,7 @@ if not exist ".env" (
 
 :: 3. Bersihkan proses bot.py lama yang mungkin macet
 echo [1/3] Memeriksa dan membersihkan proses bot lama...
-.venv\Scripts\python.exe scripts\bot_manager.py stop >nul 2>nul
+.venv\Scripts\python.exe scripts\bot_manager.py clean >nul 2>nul
 
 :: 4. Cek FFmpeg
 echo [2/3] Memeriksa FFmpeg...

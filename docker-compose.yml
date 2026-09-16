@@ -1,0 +1,12 @@
+services:
+  oriontclipper:
+    build: .
+    container_name: oriontclipper-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./tmp:/app/tmp
