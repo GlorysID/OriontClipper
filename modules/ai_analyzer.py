@@ -215,11 +215,79 @@ def parse_campaign_notes(raw: Any, limit: int = 10) -> list[str]:
     return out
 
 
+def extract_duration_bounds(
+    campaign_rules_text: str | None,
+    default_min: float = 15.0,
+    default_max: float = 120.0,
+) -> tuple[float, float]:
+    """Ekstraksi batas durasi (min, max detik) dari teks aturan bebas / campaign brief."""
+    if not campaign_rules_text or not str(campaign_rules_text).strip():
+        return default_min, default_max
+
+    text = str(campaign_rules_text).lower()
+    min_dur: float | None = None
+    max_dur: float | None = None
+
+    # 1. Rentang durasi: "30-60 detik", "durasi 30 - 60s", "antara 30 sampai 60 detik", "30 to 60 seconds"
+    range_match = re.search(
+        r"(?:durasi|panjang)?\s*(?:antara\s+)?(\d{1,3})\s*(?:-|sampai|hingga|to)\s*(\d{1,3})\s*(?:detik|second|s\b)",
+        text,
+    )
+    if range_match:
+        d1 = float(range_match.group(1))
+        d2 = float(range_match.group(2))
+        if d1 < d2:
+            min_dur, max_dur = d1, d2
+        else:
+            min_dur, max_dur = d2, d1
+
+    # 2. Minimal: "minimal berdurasi 40 detik", "berdurasi minimal 40 detik", "durasi minimal 40 detik",
+    # "minimal 40 detik", "minimal 40s", "min 40 detik", "paling sedikit 40 detik", "at least 40s", "di atas 40 detik"
+    if min_dur is None:
+        min_match = re.search(
+            r"(?:minimal\s+(?:ber)?durasi|berdurasi\s+minimal|durasi\s+minimal|minimal|min\.?|paling\s+sedikit|setidaknya|at\s+least|minimum|di\s+atas|lebih\s+dari)\s*[:=]?\s*(\d{1,3})\s*(?:detik|second|s\b)?",
+            text,
+        )
+        if min_match:
+            val = float(min_match.group(1))
+            if val > 0:
+                min_dur = val
+
+    # 3. Maksimal: "maksimal berdurasi 60 detik", "berdurasi maksimal 60 detik", "durasi maksimal 60 detik",
+    # "maksimal 60s", "max 60 detik", "paling banyak 60 detik", "at most 60s", "di bawah 60 detik", "kurang dari 60 detik"
+    if max_dur is None:
+        max_match = re.search(
+            r"(?:maksimal\s+(?:ber)?durasi|berdurasi\s+maksimal|durasi\s+maksimal|maksimal|maks\.?|max\.?|paling\s+banyak|at\s+most|maximum|di\s+bawah|kurang\s+dari)\s*[:=]?\s*(\d{1,3})\s*(?:detik|second|s\b)?",
+            text,
+        )
+        if max_match:
+            val = float(max_match.group(1))
+            if val > 0:
+                max_dur = val
+
+    final_min = min_dur if min_dur is not None else default_min
+    final_max = max_dur if max_dur is not None else default_max
+    if final_min > final_max:
+        final_max = max(final_min + 15.0, default_max)
+
+    return final_min, final_max
+
+
 def inject_campaign_rules(prompt: str, campaign_rules_text: str | None) -> str:
     """Sematkan blok aturan campaign + instruksi penalaran dan pemisahan syarat akun ke prompt base."""
     rules = (campaign_rules_text or "").strip()
     if not rules:
         return prompt
+
+    dur_min, dur_max = extract_duration_bounds(rules)
+    duration_instruction = ""
+    if dur_min > config.MIN_CLIP_DURATION_S or dur_max < config.MAX_CLIP_DURATION_S:
+        duration_instruction = (
+            f"   c) ATURAN KETAT DURASI KLIP DARI USER (WAJIB DIPATUHI):\n"
+            f"      - Setiap klip WAJIB memiliki durasi MINIMAL {int(dur_min)} detik dan MAKSIMAL {int(dur_max)} detik!\n"
+            f"      - DILARANG KERAS mengusulkan klip dengan durasi di bawah {int(dur_min)} detik atau di atas {int(dur_max)} detik!\n"
+            f"      - Jika pembahasan sebuah topik pendek tapi menarik, PERLUAS cakupan konteksnya (sertakan kalimat sebelum/sesudahnya) agar durasi mencapai minimal {int(dur_min)} detik secara utuh tanpa memotong konteks!\n"
+        )
 
     block = (
         "\n=======================================================\n"
@@ -231,6 +299,7 @@ def inject_campaign_rules(prompt: str, campaign_rules_text: str | None) -> str:
         "      - Pahami topik yang dicari, kriteria kurasi, gaya/tone bicara, serta hal-hal yang dilarang diucapkan/dibahas.\n"
         "      - HANYA pilih dan prioritaskan momen yang selaras dengan kriteria ini. Buang dan eliminasi segmen yang melanggar!\n"
         "      - Pada SETIAP klip yang dipilih, di field 'alasan', sertakan penjelasan singkat mengapa klip ini cocok dan memenuhi aturan campaign tersebut.\n"
+        f"{duration_instruction}"
         "   b) ATURAN DI LUAR KENDALI VIDEO / SYARAT AKUN (Out-of-scope / Account Rules):\n"
         "      - Jika ada aturan yang berkaitan dengan akun, profil, posting, atau metrik (contoh: 'akun harus minimal 1000 followers', 'wajib pasang link di bio', 'upload jam 19:00', 'username tanpa kata clips', dll.), "
         "AI TIDAK PERLU menolak klip karena syarat ini (karena syarat ini di luar kendali editing video).\n"
@@ -261,10 +330,17 @@ def build_user_prompt(
 ) -> str:
     """Render user prompt dengan bahasa video dinamis dan injeksi aturan campaign."""
     lang_code, lang_name = detect_transcript_language(transcript, video_language)
+    if min_duration is None or max_duration is None:
+        dur_min, dur_max = extract_duration_bounds(campaign_rules_text)
+        if min_duration is None:
+            min_duration = dur_min
+        if max_duration is None:
+            max_duration = dur_max
+
     prompt = USER_PROMPT_TEMPLATE.format(
         transcript="{transcript}",
-        min_duration=int(config.MIN_CLIP_DURATION_S if min_duration is None else min_duration),
-        max_duration=int(config.MAX_CLIP_DURATION_S if max_duration is None else max_duration),
+        min_duration=int(min_duration),
+        max_duration=int(max_duration),
         target_language_code=lang_code,
         target_language_name=lang_name,
     )
@@ -389,6 +465,8 @@ def validate_moments(
     video_duration_s: float,
     max_clips: int = config.MAX_PROPOSED_CLIPS,
     campaign_active: bool = False,
+    min_clip_duration: float | None = None,
+    max_clip_duration: float | None = None,
 ) -> list[ClipMoment]:
     if isinstance(raw, dict) and isinstance(raw.get("clips"), list):
         raw_items = raw["clips"]
@@ -398,6 +476,9 @@ def validate_moments(
         raise AIAnalyzerError("AI response must be a JSON array or object with clips[]")
 
     top_campaign_notes = parse_campaign_notes(raw.get("campaign_notes")) if isinstance(raw, dict) else []
+
+    eff_min = float(min_clip_duration) if min_clip_duration is not None else float(config.MIN_CLIP_DURATION_S)
+    eff_max = float(max_clip_duration) if max_clip_duration is not None else float(config.MAX_CLIP_DURATION_S)
 
     moments: list[ClipMoment] = []
     for item in raw_items:
@@ -486,9 +567,10 @@ def validate_moments(
         duration = end - start
         if start < 0 or start >= end:
             continue
-        if duration < config.MIN_CLIP_DURATION_S or duration > config.MAX_CLIP_DURATION_S:
+        # Toleransi 1.5 detik untuk natural boundaries
+        if duration < (eff_min - 1.5) or duration > (eff_max + 5.0):
             continue
-        if end > video_duration_s:
+        if end > video_duration_s + 2.0:
             continue
 
         moments.append(
@@ -620,7 +702,11 @@ def build_natural_sentences(segments: Iterable[Any]) -> list[dict[str, Any]]:
     return sentences
 
 
-def snap_moment_to_transcript(moment: ClipMoment, segments: Iterable[Any]) -> ClipMoment:
+def snap_moment_to_transcript(
+    moment: ClipMoment,
+    segments: Iterable[Any],
+    min_clip_duration: float | None = None,
+) -> ClipMoment:
     """Snaps moment start & end to exact sentence boundaries based on first_words/last_words or nearest cue."""
     natural_sentences = build_natural_sentences(segments)
     if not natural_sentences:
@@ -628,6 +714,7 @@ def snap_moment_to_transcript(moment: ClipMoment, segments: Iterable[Any]) -> Cl
 
     best_start = moment.start
     best_end = moment.end
+    end_idx: int | None = None
     first_target = " ".join((moment.first_words or "").lower().split()[:4])
     last_target = " ".join((moment.last_words or "").lower().split()[-3:])
 
@@ -653,18 +740,20 @@ def snap_moment_to_transcript(moment: ClipMoment, segments: Iterable[Any]) -> Cl
     # 2. Match end boundary
     matched_end = None
     if last_target:
-        for s in natural_sentences:
+        for idx_s, s in enumerate(natural_sentences):
             s_text = s["text"].lower()
             if last_target in s_text and abs(s["end"] - moment.end) <= 12.0:
                 matched_end = float(s["end"])
+                end_idx = idx_s
                 break
 
     if matched_end is None:
         # Snap to nearest sentence end within ±4.0 seconds
-        candidates = [s for s in natural_sentences if abs(float(s["end"]) - moment.end) <= 4.0]
+        candidates = [(idx_s, s) for idx_s, s in enumerate(natural_sentences) if abs(float(s["end"]) - moment.end) <= 4.0]
         if candidates:
-            closest = min(candidates, key=lambda s: abs(float(s["end"]) - moment.end))
+            closest_idx, closest = min(candidates, key=lambda pair: abs(float(pair[1]["end"]) - moment.end))
             matched_end = float(closest["end"])
+            end_idx = closest_idx
 
     if matched_end is not None:
         best_end = matched_end
@@ -673,6 +762,19 @@ def snap_moment_to_transcript(moment: ClipMoment, segments: Iterable[Any]) -> Cl
     if best_end <= best_start:
         best_start = moment.start
         best_end = moment.end
+
+    # Enforce minimum duration: expand forward to complete natural sentence if snapping shrank duration
+    if min_clip_duration is not None and min_clip_duration > 0:
+        eff_min = float(min_clip_duration)
+        if (best_end - best_start) < eff_min:
+            search_start = (end_idx + 1) if end_idx is not None else 0
+            for extra_s in natural_sentences[search_start:]:
+                if float(extra_s["end"]) - best_start >= eff_min:
+                    best_end = float(extra_s["end"])
+                    break
+            else:
+                if natural_sentences and float(natural_sentences[-1]["end"]) > best_end:
+                    best_end = float(natural_sentences[-1]["end"])
 
     return ClipMoment(
         start=best_start,
@@ -800,6 +902,7 @@ class AIAnalyzer:
         transcript = transcript_text_from_segments(segments)
         if not transcript:
             raise AIAnalyzerError("Transcript is empty; cannot analyze clips")
+        dur_min, dur_max = extract_duration_bounds(campaign_rules_text)
         moments = self.analyze_transcript_text(
             transcript,
             video_duration_s,
@@ -809,7 +912,7 @@ class AIAnalyzer:
             **kwargs,
         )
         # Snap all moments to exact sentence boundaries using first_words/last_words
-        snapped = [snap_moment_to_transcript(m, segments) for m in moments]
+        snapped = [snap_moment_to_transcript(m, segments, min_clip_duration=dur_min) for m in moments]
         return dedupe_moments(snapped)
 
     def analyze_transcript_text(
@@ -874,6 +977,7 @@ class AIAnalyzer:
     ) -> list[ClipMoment]:
         response_format_enabled = True
         last_error: Exception | None = None
+        dur_min, dur_max = extract_duration_bounds(campaign_rules_text)
 
         for attempt in range(1, config.MAX_RETRIES + 1):
             try:
@@ -884,7 +988,13 @@ class AIAnalyzer:
                     video_language=video_language,
                 )
                 raw = parse_json_content(content)
-                moments = validate_moments(raw, video_duration_s, campaign_active=campaign_active)
+                moments = validate_moments(
+                    raw,
+                    video_duration_s,
+                    campaign_active=campaign_active,
+                    min_clip_duration=dur_min,
+                    max_clip_duration=dur_max,
+                )
                 if moments:
                     self.logger.info("AI selected %s valid clip moment(s)", len(moments))
                     return moments
@@ -930,11 +1040,12 @@ class AIAnalyzer:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        dur_min, dur_max = extract_duration_bounds(campaign_rules_text)
         user_prompt = build_user_prompt(
             transcript,
             campaign_rules_text,
-            min_duration=int(config.MIN_CLIP_DURATION_S),
-            max_duration=int(config.MAX_CLIP_DURATION_S),
+            min_duration=dur_min,
+            max_duration=dur_max,
             video_language=video_language,
         )
         payload: dict[str, Any] = {

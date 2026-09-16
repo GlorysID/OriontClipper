@@ -29,6 +29,7 @@ from modules.ai_analyzer import (
     AIAnalyzerError,
     ClipMoment,
     extract_chat_message_content,
+    extract_duration_bounds,
     parse_chat_response_body,
 )
 from modules.file_manager import (
@@ -328,6 +329,7 @@ def refine_clip_boundaries_with_whisper(
     approx_end: float,
     first_words: str = "",
     last_words: str = "",
+    min_clip_duration: float | None = None,
 ) -> tuple[float, float]:
     """Refines clip start and end timestamps to exact word boundaries from Whisper.
 
@@ -398,6 +400,16 @@ def refine_clip_boundaries_with_whisper(
         if before_words:
             best_end = before_words[-1]["end"] + 0.15
 
+    # Enforce minimum duration constraint: don't let Whisper refinement shrink clip below min_clip_duration
+    if min_clip_duration is not None and min_clip_duration > 0:
+        eff_min = float(min_clip_duration)
+        if (best_end - best_start) < eff_min and (approx_end - approx_start) >= (eff_min - 2.0):
+            extended_words = [w for w in all_words if (w["end"] + 0.15 - best_start) >= eff_min]
+            if extended_words:
+                best_end = extended_words[0]["end"] + 0.15
+            elif (approx_end - best_start) >= eff_min:
+                best_end = approx_end
+
     if best_end <= best_start + 2.0:
         return approx_start, approx_end
 
@@ -413,6 +425,7 @@ def run_youtube_render_single(
     user_id: int,
     progress: ProgressState | None = None,
     user_template: dict[str, Any] | None = None,
+    min_clip_duration: float | None = None,
 ) -> Path:
     """Download only the selected section and render 1 clip."""
     if progress:
@@ -422,7 +435,8 @@ def run_youtube_render_single(
 
     # Snap moment to exact sentence boundaries before download
     from modules.ai_analyzer import snap_moment_to_transcript
-    snapped_moment = snap_moment_to_transcript(moment, transcript.segments)
+    target_min = min_clip_duration if min_clip_duration is not None else (moment.end - moment.start)
+    snapped_moment = snap_moment_to_transcript(moment, transcript.segments, min_clip_duration=target_min)
 
     seg_path = youtube_flow.download_youtube_segment(
         url,
@@ -442,7 +456,8 @@ def run_youtube_render_single(
     clip_end = float(snapped_moment.end) - offset
     clip_start = float(snapped_moment.start) - offset
     clip_end = min(clip_end, video_info.duration)
-    if clip_end - clip_start < config.MIN_CLIP_DURATION_S:
+    eff_min_check = target_min if (target_min and target_min > config.MIN_CLIP_DURATION_S) else config.MIN_CLIP_DURATION_S
+    if clip_end - clip_start < (eff_min_check - 2.0):
         seg_path.unlink(missing_ok=True)
         raise VideoEditError(f"Segmen {idx} terlalu pendek setelah di-clamp ({clip_end - clip_start:.1f}s)")
 
@@ -475,6 +490,7 @@ def run_youtube_render_single(
                 clip_end,
                 snapped_moment.first_words,
                 snapped_moment.last_words,
+                min_clip_duration=target_min,
             )
             LOGGER.info(
                 "Refined clip %s boundaries using Whisper: %.2fs-%.2fs -> %.2fs-%.2fs (duration: %.2fs)",
@@ -2497,12 +2513,24 @@ def get_user_hook_template(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]
     style = get_user_style(context)
     preset_name = style.get("preset", "hormozi")
     template = load_named_template(preset_name)
+    pos = style.get("position", "upper_center")
+    color = style.get("highlight_color", "#ffe600")
+
     if "hook" in template and isinstance(template["hook"], dict):
-        if "position" in style:
-            template["hook"]["position"] = style["position"]
-            template["hook"]["y"] = style["position"]
-        if "highlight_color" in style:
-            template["hook"]["highlight_color"] = style["highlight_color"]
+        template["hook"]["position"] = pos
+        template["hook"]["y"] = pos
+        template["hook"]["highlight_color"] = color
+        template["hook"]["highlight_last_word"] = True  # Ensure hook always displays the chosen highlight color
+        if template["hook"].get("box_outline_color"):
+            template["hook"]["box_outline_color"] = f"{color}@0.65"
+
+    if "subtitle" in template and isinstance(template["subtitle"], dict):
+        template["subtitle"]["highlight_color"] = color
+        if pos == "lower":
+            template["subtitle"]["margin_v"] = 280
+        elif pos in ("top", "upper_center"):
+            template["subtitle"]["margin_v"] = 420
+
     return template
 
 
@@ -3416,6 +3444,9 @@ async def generate_single_clip_flow(
     user_tpl = get_user_hook_template(context)
     try:
         if job["type"] == "youtube":
+            camp_rules = job.get("campaign_rules_text") or ""
+            rule_min, _ = extract_duration_bounds(camp_rules)
+            target_min_dur = rule_min if rule_min > config.MIN_CLIP_DURATION_S else (moment.end - moment.start)
             clip_path = await loop.run_in_executor(
                 None,
                 partial(
@@ -3428,6 +3459,7 @@ async def generate_single_clip_flow(
                     user_id,
                     progress,
                     user_tpl,
+                    min_clip_duration=target_min_dur,
                 ),
             )
         else:
